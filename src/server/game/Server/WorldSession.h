@@ -34,6 +34,7 @@
 #include <boost/circular_buffer_fwd.hpp>
 #include <array>
 #include <atomic>
+#include <functional>
 #include <map>
 #include <memory>
 #include <unordered_map>
@@ -1007,6 +1008,7 @@ class TC_GAME_API WorldSession
         void SetBotSession(bool bot) { _isBotSession = bot; }
         bool IsBotSession() const { return _isBotSession; }
         void LoginBotCharacter(ObjectGuid guid);            // skips the client connect-to-instance step
+        void SetBotBeforeAddToMap(std::function<void(Player*)> callback) { _botBeforeAddToMap = std::move(callback); }
         void FinishBotTeleport();                           // what the client's teleport ack would do
         bool PlayerLogout() const { return m_playerLogout; }
         bool PlayerLogoutWithSave() const { return m_playerLogout && m_playerSave; }
@@ -2087,6 +2089,7 @@ class TC_GAME_API WorldSession
         bool m_inQueue;                                     // session wait in auth.queue
         ObjectGuid m_playerLoading;                         // code processed in LoginPlayer
         bool _isBotSession = false;
+        std::function<void(Player*)> _botBeforeAddToMap;
         bool m_playerLogout;                                // code processed in LogoutPlayer
         bool m_playerRecentlyLogout;
         bool m_playerSave;

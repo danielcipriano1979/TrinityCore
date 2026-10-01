@@ -230,8 +230,7 @@ std::string ForeverBotMgr::AddBot(Player* owner, uint8 classId, BotRole role)
 
     if (!pendingCommit)
     {
-        PlaceCharacterAt(guid, owner);
-        session->LoginBotCharacter(guid);
+        StartLogin(bot, owner);
         return {};
     }
 
@@ -251,8 +250,7 @@ std::string ForeverBotMgr::AddBot(Player* owner, uint8 classId, BotRole role)
             return;
         }
 
-        PlaceCharacterAt(guid, owner);
-        created->Session->LoginBotCharacter(guid);
+        StartLogin(*created, owner);
     });
     return {};
 }
@@ -277,13 +275,28 @@ void ForeverBotMgr::LearnClassSpells(Player* bot)
     }
 }
 
-void ForeverBotMgr::InitializeInWorld(ForeverBot& bot, Player* botPlayer, Player* owner)
+void ForeverBotMgr::StartLogin(ForeverBot& bot, Player* owner)
 {
+    PlaceCharacterAt(bot.Guid, owner);
+    bot.Session->SetBotBeforeAddToMap([this, guid = bot.Guid](Player* botPlayer) { PrepareBeforeWorld(guid, botPlayer); });
+    bot.Session->LoginBotCharacter(bot.Guid);
+}
+
+// Runs inside the bot's login, after it is loaded and before it is added to the map: nobody sees it yet, so the
+// level, the spells and the group membership reach the other players in the create object. Joining a group while
+// visible sends a full party member values update, which crashes the 1.60 client.
+void ForeverBotMgr::PrepareBeforeWorld(ObjectGuid guid, Player* botPlayer)
+{
+    ForeverBot* bot = GetBot(guid);
+    Player* owner = bot ? ObjectAccessor::FindConnectedPlayer(bot->Owner) : nullptr;
+    if (!owner)
+        return;
+
     if (botPlayer->GetLevel() != owner->GetLevel())
         botPlayer->GiveLevel(owner->GetLevel());
     LearnClassSpells(botPlayer);
-
-    botPlayer->ResurrectPlayer(1.0f);
+    if (botPlayer->isDead())
+        botPlayer->ResurrectPlayer(1.0f);
     botPlayer->SetFullHealth();
     botPlayer->SetFullPower(botPlayer->GetPowerType());
 
@@ -308,8 +321,10 @@ void ForeverBotMgr::InitializeInWorld(ForeverBot& bot, Player* botPlayer, Player
             group->ConvertToRaid();
         group->AddMember(botPlayer);
     }
-    group->BroadcastGroupUpdate();
+}
 
+void ForeverBotMgr::InitializeInWorld(ForeverBot& bot, Player* botPlayer, Player* owner)
+{
     if (!botPlayer->AI())
         botPlayer->SetBotAI(new ForeverBotAI(botPlayer));
 
@@ -428,10 +443,9 @@ void ForeverBotMgr::Update(uint32 diff)
         if (botPlayer->GetMapId() != owner->GetMapId() || botPlayer->GetInstanceId() != owner->GetInstanceId())
         {
             Logout(bot);
-            PlaceCharacterAt(guid, owner);
             bot.Session = CreateBotSession(GetBotAccountId());
             bot.Relogging = true;
-            bot.Session->LoginBotCharacter(guid);
+            StartLogin(bot, owner);
             continue;
         }
 

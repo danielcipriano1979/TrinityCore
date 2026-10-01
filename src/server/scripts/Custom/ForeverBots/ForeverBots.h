@@ -78,6 +78,8 @@ private:
     ObjectGuid FindOrCreateCharacter(Player* owner, uint8 classId, uint32 accountId, WorldSession* session, std::string& error,
         CharacterDatabaseTransaction& pendingCommit);
     void PlaceCharacterAt(ObjectGuid guid, Player* owner);
+    void StartLogin(ForeverBot& bot, Player* owner);
+    void PrepareBeforeWorld(ObjectGuid guid, Player* botPlayer);
     void InitializeInWorld(ForeverBot& bot, Player* botPlayer, Player* owner);
     void LearnClassSpells(Player* bot);
     void Teleport(ForeverBot& bot, Player* botPlayer, Player* owner);

@@ -1513,6 +1513,11 @@ void WorldSession::HandlePlayerLogin(LoginQueryHolder const& holder)
             pCurrChar->Relocate(pCurrChar->GetPositionX(), pCurrChar->GetPositionY(), z + 0.5f, pCurrChar->GetOrientation());
     }
 
+    // Forever bots: level, spells and group are set up here, before anyone can see the bot, so the other players get
+    // all of it in the create object (the 1.60 client crashes on the full party member values update a group join sends)
+    if (_isBotSession && _botBeforeAddToMap)
+        _botBeforeAddToMap(pCurrChar);
+
     if (!pCurrChar->GetMap()->AddPlayerToMap(pCurrChar))
     {
         if (AreaTriggerTeleport const* at = sObjectMgr->GetGoBackTrigger(pCurrChar->GetMapId()))
