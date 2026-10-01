@@ -25406,6 +25406,19 @@ void Player::SendInitialVisiblePackets(WorldObject* target) const
         WorldPackets::Query::QueryPlayerNamesResponse response;
         GetSession()->BuildNameQueryData(target->GetGUID(), response.Players.emplace_back());
         SendDirectMessage(response.Write());
+
+        // Forever: diagnose bots shown without their gear
+        if (!GetSession()->IsBotSession() || target->ToPlayer()->GetSession()->IsBotSession() == false)
+        {
+            std::string items;
+            for (uint8 slot = EQUIPMENT_SLOT_START; slot < EQUIPMENT_SLOT_END; ++slot)
+            {
+                UF::VisibleItem const& visible = target->ToPlayer()->m_playerData->VisibleItems[slot];
+                if (visible.ItemID)
+                    items += Trinity::StringFormat(" {}:{}/{}/{}", slot, *visible.ItemID, *visible.ItemModifiedAppearanceID, *visible.ItemAppearanceModID);
+            }
+            TC_LOG_INFO("server", "Visible gear of {} sent to {}:{}", target->ToPlayer()->GetName(), GetName(), items);
+        }
     }
 
     if (Unit* targetUnit = target->ToUnit())

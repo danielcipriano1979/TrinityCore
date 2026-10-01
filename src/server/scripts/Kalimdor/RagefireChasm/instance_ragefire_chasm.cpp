@@ -17,28 +17,26 @@
 
 #include "ScriptMgr.h"
 #include "InstanceScript.h"
+#include "Log.h"
+#include "Map.h"
 #include "ragefire_chasm.h"
 
+// Forever: Classic Ragefire Chasm. The Cataclysm revamp script (Adarogg, Koranthal, Slagmaw, Gordoth with their
+// DungeonEncounter ids) doesn't match the Classic 1.60 data and crashed the server on entering.
 static constexpr ObjectData creatureData[] =
 {
-    { NPC_ADAROGG,               BOSS_ADAROGG               },
-    { NPC_DARK_SHAMAN_KORANTHAL, BOSS_DARK_SHAMAN_KORANTHAL },
-    { NPC_SLAGMAW,               BOSS_SLAGMAW               },
-    { NPC_LAVA_GUARD_GORDOTH,    BOSS_LAVA_GUARD_GORDOTH    },
+    { NPC_OGGLEFLINT, BOSS_OGGLEFLINT },
+    { NPC_TARAGAMAN,  BOSS_TARAGAMAN  },
+    { NPC_JERGOSH,    BOSS_JERGOSH    },
+    { NPC_BAZZALAN,   BOSS_BAZZALAN   },
 };
 
-static constexpr DungeonEncounterData encounters[] =
-{
-    { BOSS_ADAROGG,               {{ 1443 }}  },
-    { BOSS_DARK_SHAMAN_KORANTHAL, {{ 1444 }}  },
-    { BOSS_SLAGMAW,               {{ 1445 }}  },
-    { BOSS_LAVA_GUARD_GORDOTH,    {{ 1446 }}  }
-};
+static constexpr char const* BossNames[EncounterCount] = { "Oggleflint", "Taragaman", "Jergosh", "Bazzalan" };
 
 class instance_ragefire_chasm : public InstanceMapScript
 {
 public:
-    instance_ragefire_chasm() : InstanceMapScript("instance_ragefire_chasm", 389) { }
+    instance_ragefire_chasm() : InstanceMapScript(RfCScriptName, 389) { }
 
     struct instance_ragefire_chasm_InstanceMapScript : public InstanceScript
     {
@@ -47,7 +45,40 @@ public:
             SetHeaders(DataHeader);
             SetBossNumber(EncounterCount);
             LoadObjectData(creatureData, {});
-            LoadDungeonEncounterData(encounters);
+        }
+
+        void Create() override
+        {
+            InstanceScript::Create();
+            TC_LOG_INFO("server.ragefire", "[RFC] Instance {} created", instance->GetInstanceId());
+        }
+
+        bool SetBossState(uint32 id, EncounterState state) override
+        {
+            if (!InstanceScript::SetBossState(id, state))
+                return false;
+
+            if (id < EncounterCount)
+            {
+                switch (state)
+                {
+                    case IN_PROGRESS: TC_LOG_INFO("server.ragefire", "[RFC] {} engaged (instance {})", BossNames[id], instance->GetInstanceId()); break;
+                    case NOT_STARTED: TC_LOG_INFO("server.ragefire", "[RFC] {} reset (instance {})", BossNames[id], instance->GetInstanceId()); break;
+                    case DONE:        TC_LOG_INFO("server.ragefire", "[RFC] {} defeated (instance {})", BossNames[id], instance->GetInstanceId()); break;
+                    default: break;
+                }
+            }
+
+            if (state == DONE)
+            {
+                bool allDone = true;
+                for (uint32 boss = 0; boss < EncounterCount; ++boss)
+                    if (GetBossState(boss) != DONE)
+                        allDone = false;
+                if (allDone)
+                    TC_LOG_INFO("server.ragefire", "[RFC] Instance {} completed", instance->GetInstanceId());
+            }
+            return true;
         }
     };
 

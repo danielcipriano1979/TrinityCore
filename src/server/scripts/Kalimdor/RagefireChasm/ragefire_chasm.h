@@ -25,18 +25,32 @@ constexpr char const* RfCScriptName = "instance_ragefire_chasm";
 
 constexpr uint32 const EncounterCount = 4;
 
+// Forever: the Classic 1.60 client has the original Ragefire Chasm (Oggleflint, Taragaman, Jergosh, Bazzalan); the
+// bosses run SmartAI and report their state through SMART_ACTION_SET_INST_DATA (custom/sql/world/*ragefire_chasm*.sql)
 enum RFCDataTypes
 {
     // Encounters
-    BOSS_ADAROGG               = 0,
-    BOSS_DARK_SHAMAN_KORANTHAL = 1,
-    BOSS_SLAGMAW               = 2,
-    BOSS_LAVA_GUARD_GORDOTH    = 3
+    BOSS_OGGLEFLINT            = 0,
+    BOSS_TARAGAMAN             = 1,
+    BOSS_JERGOSH               = 2,
+    BOSS_BAZZALAN              = 3,
+
+    // Cataclysm revamp bosses (not in the Classic data; their scripts stay registered, unused)
+    BOSS_ADAROGG               = BOSS_OGGLEFLINT,
+    BOSS_DARK_SHAMAN_KORANTHAL = BOSS_TARAGAMAN,
+    BOSS_SLAGMAW               = BOSS_JERGOSH,
+    BOSS_LAVA_GUARD_GORDOTH    = BOSS_BAZZALAN
 };
 
 enum RFCCreatureIds
 {
     // Bosses
+    NPC_OGGLEFLINT            = 11517,
+    NPC_JERGOSH               = 11518,
+    NPC_BAZZALAN              = 11519,
+    NPC_TARAGAMAN             = 11520,
+
+    // Cataclysm revamp bosses
     NPC_ADAROGG               = 61408,
     NPC_DARK_SHAMAN_KORANTHAL = 61412,
     NPC_SLAGMAW               = 61463,
