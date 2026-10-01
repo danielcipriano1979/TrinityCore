@@ -5126,6 +5126,10 @@ void Spell::SendSpellExecuteLog()
     if (_executeLogEffects.empty())
         return;
 
+    // Classic 1.60: the client crashes on this packet (BC_ASSERT(n < m_size) right after opening a chest, the
+    // open lock effect is the only one logged there); its effect target lists are laid out differently than in
+    // retail. It only feeds the combat log, so it is not sent until that layout is known.
+#ifdef FOREVER_CLASSIC_SEND_EXECUTE_LOG
     WorldPackets::CombatLog::SpellExecuteLog spellExecuteLog;
     spellExecuteLog.Caster = m_caster->GetGUID();
     spellExecuteLog.SpellID = m_spellInfo->Id;
@@ -5133,6 +5137,7 @@ void Spell::SendSpellExecuteLog()
     spellExecuteLog.LogData.Initialize(this);
 
     m_caster->SendCombatLogMessage(&spellExecuteLog);
+#endif
 
     _executeLogEffects.clear();
 }
