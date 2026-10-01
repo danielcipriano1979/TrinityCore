@@ -822,7 +822,7 @@ void ForeverBotMgr::InitializeInWorld(ForeverBot& bot, Player* botPlayer, Player
     bot.Ready = true;
     bot.Relogging = false;
     if (owner && announce)
-        ChatHandler(owner->GetSession()).PSendSysMessage("ForeverBots: {} joins as {}.", botPlayer->GetName(), BotRoleName(bot.Role));
+        ChatHandler(owner->GetSession()).SendSysMessage(Trinity::StringFormat("ForeverBots: {} joins as {}.", botPlayer->GetName(), BotRoleName(bot.Role)));
 }
 
 void ForeverBotMgr::Teleport(ForeverBot& bot, Player* botPlayer, Player* owner)
@@ -980,10 +980,22 @@ uint32 ForeverBotMgr::CountWorldBots() const
     return count;
 }
 
-void ForeverBotMgr::SetWorldBotCount(uint32 count)
+void ForeverBotMgr::SetWorldBotCount(uint32 count, bool persist /*= true*/)
 {
     _worldTarget = std::min(count, MaxWorldBots);
     _balanceTimer = 0;
+
+    // kept across restarts (world_variable of this realm's characters database)
+    if (persist)
+        CharacterDatabase.Execute(Trinity::StringFormat("REPLACE INTO world_variable (ID, Value) VALUES ('ForeverBots.WorldBots', {})", _worldTarget).c_str());
+}
+
+void ForeverBotMgr::LoadWorldBotCount(uint32 configDefault)
+{
+    uint32 count = configDefault;
+    if (QueryResult result = CharacterDatabase.Query("SELECT Value FROM world_variable WHERE ID = 'ForeverBots.WorldBots'"))
+        count = uint32(std::max<int32>(0, (*result)[0].GetInt32()));
+    SetWorldBotCount(count, false);
 }
 
 // ---------------------------------------------------------------------------------------------------------------------

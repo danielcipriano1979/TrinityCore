@@ -10,7 +10,8 @@
  *   .bot summon                        teleport your bots next to you
  *   .bot world [count]                 world bots: keeps <count> of them hunting around the world (0 = none)
  *
- * The world bot count starts from ForeverBots.WorldBots in worldserver.conf (default 0).
+ * The world bot count set by .bot world is kept across restarts (world_variable 'ForeverBots.WorldBots'); before
+ * it was ever set, ForeverBots.WorldBots in worldserver.conf (default 0) is used.
  */
 
 #include "ForeverBots.h"
@@ -23,6 +24,7 @@
 #include "RBAC.h"
 #include "ScriptMgr.h"
 #include "StringConvert.h"
+#include "StringFormat.h"
 #include "Util.h"
 #include "WorldSession.h"
 
@@ -117,7 +119,7 @@ public:
     {
         if (count)
             sForeverBotMgr->SetWorldBotCount(*count);
-        handler->PSendSysMessage("ForeverBots: world bots {} online, target {}.", sForeverBotMgr->CountWorldBots(), sForeverBotMgr->GetWorldBotTarget());
+        handler->SendSysMessage(Trinity::StringFormat("ForeverBots: world bots {} online, target {}.", sForeverBotMgr->CountWorldBots(), sForeverBotMgr->GetWorldBotTarget()));
         return true;
     }
 
@@ -162,7 +164,7 @@ public:
                         classId = alias.ClassId;
                 if (!classId)
                 {
-                    chat.PSendSysMessage("ForeverBots: unknown class '{}'.", first);
+                    chat.SendSysMessage(Trinity::StringFormat("ForeverBots: unknown class '{}'.", first));
                     return true;
                 }
                 if (words.size() >= 3)
@@ -177,15 +179,15 @@ public:
 
             if (!CanTake(classId, *role))
             {
-                chat.PSendSysMessage("ForeverBots: a {} cannot be a {}.", ClassName(classId), BotRoleName(*role));
+                chat.SendSysMessage(Trinity::StringFormat("ForeverBots: a {} cannot be a {}.", ClassName(classId), BotRoleName(*role)));
                 return true;
             }
 
             std::string error = sForeverBotMgr->AddBot(player, classId, *role);
             if (!error.empty())
-                chat.PSendSysMessage("ForeverBots: {}", error);
+                chat.SendSysMessage(Trinity::StringFormat("ForeverBots: {}", error));
             else
-                chat.PSendSysMessage("ForeverBots: a {} {} is on the way.", ClassName(classId), BotRoleName(*role));
+                chat.SendSysMessage(Trinity::StringFormat("ForeverBots: a {} {} is on the way.", ClassName(classId), BotRoleName(*role)));
             return true;
         }
 
@@ -201,7 +203,7 @@ public:
                 }
                 sForeverBotMgr->SetWorldBotCount(*count);
             }
-            chat.PSendSysMessage("ForeverBots: world bots {} online, target {}.", sForeverBotMgr->CountWorldBots(), sForeverBotMgr->GetWorldBotTarget());
+            chat.SendSysMessage(Trinity::StringFormat("ForeverBots: world bots {} online, target {}.", sForeverBotMgr->CountWorldBots(), sForeverBotMgr->GetWorldBotTarget()));
             return true;
         }
 
@@ -214,8 +216,8 @@ public:
             for (ForeverBot* bot : bots)
             {
                 Player* botPlayer = bot->Session ? bot->Session->GetPlayer() : nullptr;
-                chat.PSendSysMessage("ForeverBots: list {} {} {}", botPlayer ? botPlayer->GetName() : "(loading)",
-                    botPlayer ? ClassName(botPlayer->GetClass()) : "?", BotRoleName(bot->Role));
+                chat.SendSysMessage(Trinity::StringFormat("ForeverBots: list {} {} {}", botPlayer ? botPlayer->GetName() : "(loading)",
+                    botPlayer ? ClassName(botPlayer->GetClass()) : "?", BotRoleName(bot->Role)));
             }
             return true;
         }
@@ -256,7 +258,7 @@ public:
                 return true;
             }
         }
-        chat.PSendSysMessage("ForeverBots: order {}.", action);
+        chat.SendSysMessage(Trinity::StringFormat("ForeverBots: order {}.", action));
         return true;
     }
 };
@@ -268,7 +270,7 @@ public:
 
     void OnStartup() override
     {
-        sForeverBotMgr->SetWorldBotCount(uint32(sConfigMgr->GetIntDefault("ForeverBots.WorldBots", 0)));
+        sForeverBotMgr->LoadWorldBotCount(uint32(sConfigMgr->GetIntDefault("ForeverBots.WorldBots", 0)));
     }
 
     void OnUpdate(uint32 diff) override

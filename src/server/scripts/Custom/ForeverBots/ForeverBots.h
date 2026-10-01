@@ -94,7 +94,8 @@ public:
     void RemoveAll();
 
     // world bots: keeps that many of them logged in (0 logs them all out)
-    void SetWorldBotCount(uint32 count);
+    void SetWorldBotCount(uint32 count, bool persist = true);
+    void LoadWorldBotCount(uint32 configDefault);     // the count saved by the last .bot world, else the config
     uint32 GetWorldBotTarget() const { return _worldTarget; }
     uint32 CountWorldBots() const;
 
