@@ -37,6 +37,7 @@
 #include "PartyPackets.h"
 #include "Pet.h"
 #include "Player.h"
+#include "QueryPackets.h"
 #include "UpdateData.h"
 #include "WorldSession.h"
 
@@ -836,6 +837,17 @@ void Group::SendUpdateToPlayer(Player* player, MemberSlot const* slot /*= nullpt
             return;
 
         slot = &(*citr);
+    }
+
+    // Forever: the Classic 1.60 client doesn't query the names of its party members (bots showed as "Unknown");
+    // push them before the party update
+    {
+        WorldPackets::Query::QueryPlayerNamesResponse names;
+        for (MemberSlot const& member : m_memberSlots)
+            if (member.guid != player->GetGUID())
+                player->GetSession()->BuildNameQueryData(member.guid, names.Players.emplace_back());
+        if (!names.Players.empty())
+            player->SendDirectMessage(names.Write());
     }
 
     WorldPackets::Party::PartyUpdate partyUpdate;

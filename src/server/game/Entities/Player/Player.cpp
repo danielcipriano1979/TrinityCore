@@ -106,6 +106,7 @@
 #include "PartyPackets.h"
 #include "Pet.h"
 #include "PetPackets.h"
+#include "QueryPackets.h"
 #include "PoolMgr.h"
 #include "PetitionMgr.h"
 #include "PhasingHandler.h"
@@ -25397,6 +25398,15 @@ void Player::SendInitialVisiblePackets(WorldObject* target) const
             where->SendDirectMessage(vignetteUpdate.Write());
         }
     };
+
+    // Forever: the Classic 1.60 client doesn't query the names of players it sees (bots showed as "Unknown");
+    // push the name along with the object
+    if (target->IsPlayer())
+    {
+        WorldPackets::Query::QueryPlayerNamesResponse response;
+        GetSession()->BuildNameQueryData(target->GetGUID(), response.Players.emplace_back());
+        SendDirectMessage(response.Write());
+    }
 
     if (Unit* targetUnit = target->ToUnit())
     {
