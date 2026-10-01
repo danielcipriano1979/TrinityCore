@@ -69,6 +69,15 @@ struct ForeverBot
     Position Home;                  // where it hunts
     uint32 RelogCheckTimer = 0;
     uint8 LoginLevel = 0;           // level when it last logged in
+    uint32 LastXp = 0;              // progress watchdog
+    uint32 StuckTime = 0;
+
+    // diagnostics (.botinfo)
+    uint32 LastCastSpell = 0;
+    int32 LastCastResult = -1;
+    std::string LastTarget;
+    bool LastAttackOk = false;
+    uint32 Kills = 0;
 
     bool IsWorldBot() const { return World; }
 };
@@ -153,6 +162,7 @@ private:
     bool TryCast(Unit* target, char const* spellName, bool requireNoAura = false);
     SpellInfo const* FindBestSpell(char const* spellName) const;
     void MoveForCombat(Unit* target, ForeverBot const& data);
+    bool IsChasing(Unit* target) const;
     void FollowOwner(Player* owner, ForeverBot const& data);
     void Wander(ForeverBot const& data);
     void RegenOutOfCombat(uint32 elapsed);

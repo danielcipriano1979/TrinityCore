@@ -497,6 +497,13 @@ void ForeverBotMgr::AutoGear(Player* bot, BotRole role)
 {
     GearPlan const plan = PlanFor(bot->GetClass(), role);
     uint8 const level = bot->GetLevel();
+    std::set<uint32> learnedSkills;
+
+    // classic: rogues learn Dual Wield at 10, warriors and hunters at 20 (trainer spell 674)
+    constexpr uint32 SpellDualWield = 674;
+    if (plan.DualWield && !bot->HasSpell(SpellDualWield)
+        && (bot->GetClass() == CLASS_ROGUE ? level >= 10 : level >= 20))
+        bot->LearnSpell(SpellDualWield, false);
 
     std::unordered_map<uint8, std::vector<std::pair<int32, uint32>>> candidates;   // equipment slot -> (score, item)
     auto consider = [&](uint8 slot, ItemTemplate const& proto) { candidates[slot].emplace_back(ScoreItem(proto, plan), proto.GetId()); };
@@ -514,6 +521,17 @@ void ForeverBotMgr::AutoGear(Player* bot, BotRole role)
         char const* name = proto.GetDefaultLocaleName();
         if (!name || !*name || strstr(name, "Monster") || strstr(name, "Deprecated") || strstr(name, "OLD") || strstr(name, "[PH]") || strstr(name, "Test"))
             continue;
+        // weapon and armor skills: classic trainers sell them, a bot just learns what its class and race may use
+        if (uint32 skill = proto.GetSkill(); skill && !bot->HasSkill(skill))
+        {
+            SkillRaceClassInfoEntry const* info = sDB2Manager.GetSkillRaceClassInfo(skill, bot->GetRace(), bot->GetClass());
+            if (!info || info->MinLevel > level || !learnedSkills.insert(skill).second)
+                continue;
+            uint16 const maxValue = uint16(level) * 5;
+            bot->SetSkill(skill, 1, maxValue, maxValue);
+            if (!bot->HasSkill(skill))
+                continue;
+        }
         if (bot->CanUseItem(&proto) != EQUIP_ERR_OK)
             continue;
 
@@ -601,8 +619,11 @@ void ForeverBotMgr::AutoGear(Player* bot, BotRole role)
     for (auto const& [slot, itemId] : picks)
     {
         uint16 dest = 0;
-        if (bot->CanEquipNewItem(slot, dest, itemId, false) == EQUIP_ERR_OK)
+        InventoryResult result = bot->CanEquipNewItem(slot, dest, itemId, false);
+        if (result == EQUIP_ERR_OK)
             bot->EquipNewItem(dest, itemId, ItemContext::NONE, true);
+        TC_LOG_DEBUG("misc", "ForeverBots: {} gear slot {} item {} ({} candidates) -> {}", bot->GetName(), slot, itemId,
+            candidates[slot].size(), uint32(result));
     }
 }
 
@@ -930,8 +951,16 @@ std::vector<std::string> ForeverBotMgr::DescribeBots()
             if (Unit* other = ref->GetOther(p))
                 threats += Trinity::StringFormat(" [{} valid {} victim {}]", other->GetName(), p->IsValidAttackTarget(other), other->GetVictim() ? other->GetVictim()->GetName() : "-");
         lines.push_back(Trinity::StringFormat("  attackers:{} combat refs:{}", attackers.empty() ? " none" : attackers, threats.empty() ? " none" : threats));
-        lines.push_back(Trinity::StringFormat("{} {} lvl {} xp {} {} map {} ({:.0f}, {:.0f}, {:.0f}) home dist {:.0f} | ai {} ready {} | {}{} victim {} | motion {} | hp {:.0f}% power {:.0f}%",
-            p->GetName(), bot.IsWorldBot() ? "world" : "party", p->GetLevel(), *p->m_activePlayerData->XP, p->IsAlive() ? "alive" : "dead",
+        Item const* mainHand = p->GetItemByPos(INVENTORY_SLOT_BAG_0, EQUIPMENT_SLOT_MAINHAND);
+        Item const* ranged = p->GetItemByPos(INVENTORY_SLOT_BAG_0, EQUIPMENT_SLOT_RANGED);
+        lines.push_back(Trinity::StringFormat("  victim hp {:.0f}% dist {:.1f} meleeAttacking {} attackTimer {} dmg {}-{} | last target {} attack ok {} | mounted {} pacified {} | last cast {} result {} | main hand {} ranged {} | autorepeat {} | meleeRange {} | facing {}",
+            victim ? victim->GetHealthPct() : 0.0f, victim ? p->GetDistance(victim) : 0.0f, p->HasUnitState(UNIT_STATE_MELEE_ATTACKING), p->getAttackTimer(BASE_ATTACK),
+            p->GetWeaponDamageRange(BASE_ATTACK, MINDAMAGE), p->GetWeaponDamageRange(BASE_ATTACK, MAXDAMAGE),
+            bot.LastTarget, bot.LastAttackOk, p->IsMounted(), p->HasUnitFlag(UNIT_FLAG_PACIFIED),
+            bot.LastCastSpell, bot.LastCastResult, mainHand ? mainHand->GetEntry() : 0, ranged ? ranged->GetEntry() : 0,
+            p->GetCurrentSpell(CURRENT_AUTOREPEAT_SPELL) != nullptr, victim && p->IsWithinMeleeRange(victim), victim && p->HasInArc(float(M_PI) / 2, victim)));
+        lines.push_back(Trinity::StringFormat("{} {} lvl {} xp {} kills {} {} map {} ({:.0f}, {:.0f}, {:.0f}) home dist {:.0f} | ai {} ready {} | {}{} victim {} | motion {} | hp {:.0f}% power {:.0f}%",
+            p->GetName(), bot.IsWorldBot() ? "world" : "party", p->GetLevel(), *p->m_activePlayerData->XP, bot.Kills, p->IsAlive() ? "alive" : "dead",
             p->GetMapId(), p->GetPositionX(), p->GetPositionY(), p->GetPositionZ(), bot.IsWorldBot() ? bot.Home.GetExactDist2d(p) : 0.0f,
             p->AI() != nullptr, bot.Ready, p->IsInCombat() ? "combat " : "", p->isMoving() ? "moving" : "still",
             victim ? victim->GetName() : "-", uint32(p->GetMotionMaster()->GetCurrentMovementGeneratorType()), p->GetHealthPct(),
@@ -1140,6 +1169,31 @@ void ForeverBotMgr::UpdateWorldBot(ForeverBot& bot, uint32 diff, std::vector<Obj
     if (bot.RelogCheckTimer < 10000)
         return;
     bot.RelogCheckTimer = 0;
+
+    // progress watchdog: no experience for a few minutes (nothing to hunt around, a target it can't reach...)
+    // -> another hunting spot of its level
+    uint32 const xp = *botPlayer->m_activePlayerData->XP;
+    if (xp != bot.LastXp || botPlayer->GetLevel() != bot.LoginLevel)
+    {
+        bot.LastXp = xp;
+        bot.StuckTime = 0;
+    }
+    else if ((bot.StuckTime += 10000) >= 180000)
+    {
+        bot.StuckTime = 0;
+        uint32 mapId = 0;
+        Position pos;
+        if (PickWorldSpot(botPlayer->GetLevel(), mapId, pos))
+        {
+            TC_LOG_DEBUG("misc", "ForeverBots: {} made no progress, moving to another hunting spot", botPlayer->GetName());
+            Logout(bot);
+            PlaceCharacterAt(bot.Guid, mapId, pos);
+            bot.Session = CreateBotSession(GetWorldAccountId(), WorldAccountName);
+            bot.Relogging = true;
+            StartWorldLogin(bot);
+            return;
+        }
+    }
 
     if (botPlayer->IsInCombat())
         return;

@@ -282,8 +282,21 @@ public:
     }
 };
 
+class forever_bots_playerscript : public PlayerScript
+{
+public:
+    forever_bots_playerscript() : PlayerScript("forever_bots_playerscript") { }
+
+    void OnCreatureKill(Player* killer, Creature* /*killed*/) override
+    {
+        if (ForeverBot* bot = sForeverBotMgr->GetBot(killer->GetGUID()))
+            ++bot->Kills;
+    }
+};
+
 void AddSC_forever_bots()
 {
     new forever_bots_commandscript();
     new forever_bots_worldscript();
+    new forever_bots_playerscript();
 }

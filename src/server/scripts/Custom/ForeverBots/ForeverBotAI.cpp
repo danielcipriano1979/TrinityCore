@@ -8,6 +8,7 @@
 #include "Creature.h"
 #include "GridNotifiers.h"
 #include "GridNotifiersImpl.h"
+#include "ChaseMovementGenerator.h"
 #include "Group.h"
 #include "MotionMaster.h"
 #include "Random.h"
@@ -143,7 +144,13 @@ bool ForeverBotAI::TryCast(Unit* target, char const* spellName, bool requireNoAu
     if (spellInfo->CalcCastTime() > 0 && me->isMoving())
         me->StopMoving();
 
-    return me->CastSpell(target, spellInfo->Id, false) == SPELL_CAST_OK;
+    SpellCastResult result = me->CastSpell(target, spellInfo->Id, false);
+    if (ForeverBot* data = GetBotData())
+    {
+        data->LastCastSpell = spellInfo->Id;
+        data->LastCastResult = int32(result);
+    }
+    return result == SPELL_CAST_OK;
 }
 
 bool ForeverBotAI::DoHeal(std::vector<Player*> const& members)
@@ -269,7 +276,11 @@ bool ForeverBotAI::DoAttackSpells(Unit* target, ForeverBot const& data)
             if (me->IsWithinMeleeRange(target))
                 return TryCast(target, "Raptor Strike");
             if (!me->GetCurrentSpell(CURRENT_AUTOREPEAT_SPELL) && me->HasSpell(SpellAutoShot))
-                me->CastSpell(target, SpellAutoShot, false);
+            {
+                SpellCastResult result = me->CastSpell(target, SpellAutoShot, false);
+                const_cast<ForeverBot&>(data).LastCastSpell = SpellAutoShot;
+                const_cast<ForeverBot&>(data).LastCastResult = int32(result);
+            }
             if (TryCast(target, "Hunter's Mark", true) || TryCast(target, "Serpent Sting", true))
                 return true;
             return TryCast(target, "Arcane Shot");
@@ -329,7 +340,9 @@ Unit* ForeverBotAI::SelectTarget(ForeverBot const& data, Player* owner, std::vec
                     if (valid(attacker) && attacker->GetVictim() != me)
                         return attacker;
 
-    if (Unit* victim = me->GetVictim(); valid(victim) && victim->IsInCombat())
+    // keep the current target (a world bot also before the fight starts: hopping to whatever is nearest
+    // would leave its chase movement on the old target, standing still)
+    if (Unit* victim = me->GetVictim(); valid(victim) && (victim->IsInCombat() || data.IsWorldBot()))
         return victim;
 
     if (owner)
@@ -372,13 +385,26 @@ void ForeverBotAI::MoveForCombat(Unit* target, ForeverBot const& data)
                 me->SetFacingToObject(target);
             return;
         }
-        if (motion->GetCurrentMovementGeneratorType() != CHASE_MOTION_TYPE)
+        if (!IsChasing(target))
             motion->MoveChase(target, CasterRange - 4.0f, 0.0f);
         return;
     }
 
-    if (motion->GetCurrentMovementGeneratorType() != CHASE_MOTION_TYPE)
+    if (!IsChasing(target))
         motion->MoveChase(target);
+
+    // melee swings need the target in front: a client turns its player, a bot has to be turned
+    if (me->IsWithinMeleeRange(target) && !me->isMoving() && !me->HasInArc(float(M_PI) / 2, target))
+        me->SetFacingToObject(target);
+}
+
+// a chase movement stops for good once its target is no longer our victim: it must follow the current target
+bool ForeverBotAI::IsChasing(Unit* target) const
+{
+    if (me->GetMotionMaster()->GetCurrentMovementGeneratorType() != CHASE_MOTION_TYPE)
+        return false;
+    ChaseMovementGenerator const* chase = dynamic_cast<ChaseMovementGenerator const*>(me->GetMotionMaster()->GetCurrentMovementGenerator());
+    return chase && chase->GetTarget() == target;
 }
 
 void ForeverBotAI::FollowOwner(Player* owner, ForeverBot const& data)
@@ -429,8 +455,14 @@ void ForeverBotAI::UpdateAI(uint32 diff)
     if (target)
     {
         _outOfCombatTime = 0;
-        if (me->GetVictim() != target)
-            me->Attack(target, !IsCaster() && !IsRanged());
+        // melee swings for melee classes, and for a hunter whose target got into melee range (no damage otherwise)
+        bool const melee = !IsCaster() && (!IsRanged() || me->IsWithinMeleeRange(target));
+        if (me->GetVictim() != target || melee != me->HasUnitState(UNIT_STATE_MELEE_ATTACKING))
+        {
+            bool attacked = me->Attack(target, melee);
+            data->LastTarget = target->GetName();
+            data->LastAttackOk = attacked;
+        }
         MoveForCombat(target, *data);
         if (!me->HasUnitState(UNIT_STATE_CASTING))
             DoAttackSpells(target, *data);
@@ -500,9 +532,9 @@ namespace
 Unit* ForeverBotAI::FindHuntTarget() const
 {
     std::list<Creature*> found;
-    HuntCheck check{ me, 35.0f };
+    HuntCheck check{ me, 50.0f };
     Trinity::CreatureListSearcher<HuntCheck> searcher(me, found, check);
-    Cell::VisitGridObjects(me, searcher, 35.0f);
+    Cell::VisitGridObjects(me, searcher, 50.0f);
 
     Creature* nearest = nullptr;
     for (Creature* creature : found)
