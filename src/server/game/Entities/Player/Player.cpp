@@ -19839,6 +19839,9 @@ void Player::_LoadInventory(PreparedQueryResult result, PreparedQueryResult arti
     //NOTE2: the "order by `slot`" is needed because mainhand weapons are (wrongly?)
     //expected to be equipped before offhand items (@todo fixme)
 
+    // Forever: no authenticator on a local server; every account counts as secured, which gives the 4 extra backpack
+    // slots and stops the client's "increase backpack size" prompt
+    SetPlayerLocalFlag(PLAYER_LOCAL_FLAG_ACCOUNT_SECURED);
     UpdateInventorySlotCount();
 
     std::unordered_map<ObjectGuid::LowType, ItemAdditionalLoadInfo> additionalData;
