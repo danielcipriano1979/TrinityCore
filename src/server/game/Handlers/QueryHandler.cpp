@@ -52,7 +52,13 @@ void WorldSession::HandleQueryPlayerNames(WorldPackets::Query::QueryPlayerNames&
 {
     WorldPackets::Query::QueryPlayerNamesResponse response;
     for (ObjectGuid guid : queryPlayerNames.Players)
+    {
         BuildNameQueryData(guid, response.Players.emplace_back());
+        // Forever: diagnose bots showing as "Unknown"
+        WorldPackets::Query::NameCacheLookupResult const& result = response.Players.back();
+        TC_LOG_INFO("server", "Name query from {}: {} -> result {} name '{}' account {} bnet {}", GetPlayerName(), guid.ToString(), uint32(result.Result),
+            result.Data ? result.Data->Name : "", result.Data ? result.Data->AccountID.ToString() : "", result.Data ? result.Data->BnetAccountID.ToString() : "");
+    }
 
     SendPacket(response.Write());
 }

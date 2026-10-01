@@ -215,6 +215,7 @@ void InstanceScript::LoadObjectData(std::span<ObjectData const> data, ObjectInfo
 void InstanceScript::LoadDungeonEncounterData(uint32 bossId, std::array<uint32, MAX_DUNGEON_ENCOUNTERS_PER_BOSS> const& dungeonEncounterIds)
 {
     if (bossId < bosses.size())
+    {
         for (std::size_t i = 0, j = 0; i < MAX_DUNGEON_ENCOUNTERS_PER_BOSS; ++i)
             if (dungeonEncounterIds[i])
             {
@@ -224,6 +225,7 @@ void InstanceScript::LoadDungeonEncounterData(uint32 bossId, std::array<uint32, 
                 else
                     TC_LOG_ERROR("scripts", "InstanceScript: map {} boss {} uses DungeonEncounter {} which does not exist", instance->GetId(), bossId, dungeonEncounterIds[i]);
             }
+    }
 }
 
 void InstanceScript::UpdateDoorState(GameObject* door)

@@ -699,17 +699,31 @@ void ForeverBotMgr::SpendTalents(Player* bot, BotRole role)
 
     UF::TraitConfig const* active = bot->GetTraitConfig(bot->m_activePlayerData->ActiveCombatTraitConfigID);
     if (!active)
+    {
+        TC_LOG_INFO("server.foreverbots", "ForeverBots: {} has no active talent config ({})", bot->GetName(), int32(bot->m_activePlayerData->ActiveCombatTraitConfigID));
         return;
+    }
 
     WorldPackets::Traits::TraitConfig config(*active);
 
-    // the class talent trees: those of the skill lines the bot has
+    // the class talent trees: those of the class skill line of the bot's class (as TraitMgr finds them; the bot
+    // doesn't always have that skill itself: mage, hunter, shaman and priest bots don't)
     std::set<int32> trees;
+    uint32 const classMask = bot->GetClassMask();
     for (SkillLineXTraitTreeEntry const* link : sSkillLineXTraitTreeStore)
-        if (bot->HasSkill(link->SkillLineID))
-            trees.insert(link->TraitTreeID);
+    {
+        SkillLineEntry const* skillLine = sSkillLineStore.LookupEntry(link->SkillLineID);
+        if (!skillLine || skillLine->CategoryID != SKILL_CATEGORY_CLASS)
+            continue;
+        for (SkillRaceClassInfoEntry const* info : sDB2Manager.GetSkillRaceClassInfo(skillLine->ID))
+            if (info->ClassMask & classMask)
+                trees.insert(link->TraitTreeID);
+    }
     if (trees.empty())
+    {
+        TC_LOG_INFO("server.foreverbots", "ForeverBots: {} (class {}) has no talent tree skill line", bot->GetName(), bot->GetClass());
         return;
+    }
 
     struct Candidate { TraitNodeEntry const* Node; int32 EntryId; int32 MaxRanks; int32 Tab; };
     std::vector<Candidate> candidates;
@@ -759,9 +773,12 @@ void ForeverBotMgr::SpendTalents(Player* bot, BotRole role)
     });
 
     bool changed = false;
+    int32 spentPoints = 0;
+    std::map<int32, int32> lastFailures;   // LearnResult -> count, on the pass that stopped
     for (int32 points = 0; points < 70; ++points)
     {
         bool spent = false;
+        lastFailures.clear();
         for (Candidate const& c : candidates)
         {
             WorldPackets::Traits::TraitConfig attempt = config;
@@ -780,16 +797,25 @@ void ForeverBotMgr::SpendTalents(Player* bot, BotRole role)
                 added.Rank = 1;
             }
 
-            if (TraitMgr::ValidateConfig(attempt, bot) == TraitMgr::LearnResult::Ok)
+            TraitMgr::LearnResult result = TraitMgr::ValidateConfig(attempt, bot);
+            if (result == TraitMgr::LearnResult::Ok)
             {
                 config = std::move(attempt);
                 spent = changed = true;
+                ++spentPoints;
                 break;
             }
+            ++lastFailures[AsUnderlyingType(result)];
         }
         if (!spent)
             break;
     }
+
+    std::string failures;
+    for (auto const& [result, count] : lastFailures)
+        failures += Trinity::StringFormat(" {}x{}", result, count);
+    TC_LOG_INFO("server.foreverbots", "ForeverBots: {} (class {}, level {}) talents: {} trees, {} nodes, {} tabs (wanted {}), {} points spent now, {} entries; stopped on:{}",
+        bot->GetName(), bot->GetClass(), bot->GetLevel(), trees.size(), candidates.size(), orderedTabs.size(), wanted, spentPoints, config.Entries.size(), failures);
 
     if (changed)
         bot->UpdateTraitConfig(std::move(config), 0, false);
