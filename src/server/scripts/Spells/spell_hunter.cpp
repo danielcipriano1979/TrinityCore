@@ -1392,8 +1392,9 @@ class spell_hun_tame_beast_channel : public AuraScript
         if (_handled || GetTargetApplication()->GetRemoveMode() != AURA_REMOVE_BY_EXPIRE)
             return;
 
+        // the channel also puts an aura on the hunter; only the beast's aura tames
         Unit* caster = GetCaster();
-        if (!caster || !caster->IsAlive() || !GetTarget()->IsAlive())
+        if (!caster || caster == GetTarget() || !caster->IsAlive() || !GetTarget()->IsAlive())
             return;
 
         _handled = true;
