@@ -9,6 +9,10 @@
  *   .bot passive | active              stop / resume fighting
  *   .bot summon                        teleport your bots next to you
  *   .bot world [count]                 world bots: keeps <count> of them hunting around the world (0 = none)
+ *   .bot debug [off]                   your bots log every decision ([BotAI] in Server.log)
+ *   .bot info                          your bots: state, decision, telemetry
+ *
+ * Console / GM: .botinfo, .botworld [n], .botdebug [on|off], .bottest party rfc [level] | stop | report
  *
  * The world bot count set by .bot world is kept across restarts (world_variable 'ForeverBots.WorldBots'); before
  * it was ever set, ForeverBots.WorldBots in worldserver.conf (default 0) is used.
@@ -19,6 +23,7 @@
 #include "ChatCommand.h"
 #include "Config.h"
 #include "Language.h"
+#include "ObjectMgr.h"
 #include "ObjectAccessor.h"
 #include "Player.h"
 #include "RBAC.h"
@@ -111,8 +116,91 @@ public:
             // console / GM: state of every bot, and the world bot count (also from the RA console)
             { "botinfo", HandleBotInfoCommand, rbac::RBAC_PERM_COMMAND_SERVER_INFO, Console::Yes },
             { "botworld", HandleBotWorldCommand, rbac::RBAC_PERM_COMMAND_SERVER_INFO, Console::Yes },
+            // console / GM: decision logs of every bot, telemetry, and bot-only test parties
+            { "botdebug", HandleBotDebugCommand, rbac::RBAC_PERM_COMMAND_SERVER_INFO, Console::Yes },
+            { "bottest", HandleBotTestCommand, rbac::RBAC_PERM_COMMAND_SERVER_INFO, Console::Yes },
         };
         return commandTable;
+    }
+
+    static bool HandleBotDebugCommand(ChatHandler* handler, Optional<std::string> state)
+    {
+        bool const on = !state || *state == "on" || *state == "1";
+        sForeverBotMgr->SetDebug(on);
+        handler->SendSysMessage(Trinity::StringFormat("ForeverBots: decision logs {} (Server.log, [BotAI]).", on ? "on" : "off"));
+        return true;
+    }
+
+    // .bottest party rfc [level] | party tele <name> [level] [alliance] | stop | report
+    static bool HandleBotTestCommand(ChatHandler* handler, Tail args)
+    {
+        std::vector<std::string_view> words = Trinity::Tokenize(args, ' ', false);
+        std::string action = words.empty() ? "" : std::string(words[0]);
+        strToLower(action);
+
+        if (action == "stop")
+        {
+            sForeverBotMgr->StopTestParties();
+            handler->SendSysMessage("ForeverBots: test parties removed.");
+            return true;
+        }
+        if (action == "report")
+        {
+            for (std::string const& line : sForeverBotMgr->DescribeTelemetry())
+                handler->SendSysMessage(line);
+            return true;
+        }
+        if (action != "party" || words.size() < 2)
+        {
+            handler->SendSysMessage("Usage: .bottest party rfc [level] | party tele <name> [level] [alliance] | stop | report");
+            return true;
+        }
+
+        uint32 mapId = 0;
+        Position pos;
+        uint8 level = 15;
+        uint8 team = TEAM_HORDE;
+        size_t next = 2;
+        std::string where(words[1]);
+        strToLower(where);
+        if (where == "rfc")
+        {
+            mapId = 389;                                            // Ragefire Chasm, at the entrance
+            pos.Relocate(0.797643f, -8.23429f, -15.5288f, 4.71f);
+        }
+        else if (where == "tele" && words.size() >= 3)
+        {
+            GameTele const* tele = sObjectMgr->GetGameTele(std::string(words[2]));
+            if (!tele)
+            {
+                handler->SendSysMessage("ForeverBots: unknown teleport location.");
+                return true;
+            }
+            mapId = tele->mapId;
+            pos.Relocate(tele->position_x, tele->position_y, tele->position_z, tele->orientation);
+            next = 3;
+        }
+        else
+        {
+            handler->SendSysMessage("Usage: .bottest party rfc [level] | party tele <name> [level] [alliance]");
+            return true;
+        }
+        if (words.size() > next)
+            if (Optional<uint32> value = Trinity::StringTo<uint32>(words[next]))
+                level = uint8(std::clamp<uint32>(*value, 1, 60));
+        if (words.size() > next + 1 && words[next + 1] == "alliance")
+            team = TEAM_ALLIANCE;
+
+        // tank (leader), healer and three damage dealers
+        std::vector<std::pair<uint8, BotRole>> members =
+        {
+            { CLASS_WARRIOR, BotRole::Tank }, { CLASS_PRIEST, BotRole::Heal }, { CLASS_MAGE, BotRole::Dps },
+            { CLASS_ROGUE, BotRole::Dps }, { team == TEAM_HORDE ? CLASS_WARLOCK : CLASS_HUNTER, BotRole::Dps }
+        };
+        std::string error = sForeverBotMgr->StartTestParty(mapId, pos, level, team, members);
+        handler->SendSysMessage(error.empty() ? Trinity::StringFormat("ForeverBots: test party (level {}) logging in on map {}.", level, mapId)
+            : Trinity::StringFormat("ForeverBots: {}", error));
+        return true;
     }
 
     static bool HandleBotWorldCommand(ChatHandler* handler, Optional<uint32> count)
@@ -244,6 +332,24 @@ public:
             return true;
         }
 
+        if (action == "debug")
+        {
+            bool const on = words.size() < 2 || words[1] != "off";
+            for (ForeverBot* bot : bots)
+                bot->Debug = on;
+            chat.SendSysMessage(Trinity::StringFormat("ForeverBots: decision logs {} for your bots (Server.log, [BotAI]).", on ? "on" : "off"));
+            return true;
+        }
+
+        if (action == "info")
+        {
+            for (std::string const& line : sForeverBotMgr->DescribeTelemetry())
+                for (ForeverBot* bot : bots)
+                    if (Player* botPlayer = bot->Session ? bot->Session->GetPlayer() : nullptr; botPlayer && line.starts_with(botPlayer->GetName()))
+                        chat.SendSysMessage(line);
+            return true;
+        }
+
         for (ForeverBot* bot : bots)
         {
             if (action == "follow")       { bot->Order = BotOrder::Follow; bot->Passive = false; }
@@ -270,6 +376,8 @@ public:
 
     void OnStartup() override
     {
+        sForeverBotMgr->LoadClassicSpells();
+        sForeverBotMgr->SetDebug(sConfigMgr->GetBoolDefault("ForeverBots.Debug", false));
         sForeverBotMgr->LoadWorldBotCount(uint32(sConfigMgr->GetIntDefault("ForeverBots.WorldBots", 0)));
     }
 

@@ -24,6 +24,7 @@
 #include "Position.h"
 #include <string>
 #include <unordered_map>
+#include <unordered_set>
 #include <vector>
 
 class Player;
@@ -72,12 +73,33 @@ struct ForeverBot
     uint32 LastXp = 0;              // progress watchdog
     uint32 StuckTime = 0;
 
+    // bot-only party (.bottest): this bot leads, the others are owned by it
+    bool Leader = false;
+    std::vector<std::pair<uint8, BotRole>> PendingRecruits;    // members to recruit once the leader is in the world
+
     // diagnostics (.botinfo)
     uint32 LastCastSpell = 0;
     int32 LastCastResult = -1;
     std::string LastTarget;
     bool LastAttackOk = false;
     uint32 Kills = 0;
+    bool Debug = false;                 // log every decision (BOT_DEBUG)
+    std::string Decision;               // current decision and reason
+    std::string State;
+
+    // telemetry
+    uint64 DamageDone = 0;
+    uint64 HealingDone = 0;
+    uint64 Overhealing = 0;
+    uint32 Deaths = 0;
+    uint32 Interrupts = 0;
+    uint32 Dispels = 0;
+    uint32 Taunts = 0;
+    uint32 CrowdControls = 0;
+    uint32 Resurrections = 0;
+    uint32 CastsOk = 0;
+    uint32 CastsFailed = 0;
+    uint32 CombatTime = 0;              // ms
 
     bool IsWorldBot() const { return World; }
 };
@@ -100,9 +122,22 @@ public:
     uint32 CountWorldBots() const;
 
     std::vector<std::string> DescribeBots();             // one line per bot, for .botinfo
+    std::vector<std::string> DescribeTelemetry();        // one line per bot: role, state, decision, counters
     std::vector<ForeverBot*> GetBotsOf(ObjectGuid owner);
     ForeverBot* GetBot(ObjectGuid guid);
     bool IsBot(ObjectGuid guid) const { return _bots.contains(guid); }
+    void SetDebug(bool on);                              // every bot logs its decisions
+    bool IsGlobalDebug() const { return _debug; }
+
+    // the Classic spells of each class: class trainers, talents and the level 1 spells. The client data also
+    // carries later expansions' class spells, which a Classic character never learns. Built at startup, read-only.
+    void LoadClassicSpells();
+    bool IsClassicSpell(uint8 classId, SpellInfo const* spellInfo) const;
+
+    // bot-only party for tests: a leader (first entry) and its members, logged in at that place
+    std::string StartTestParty(uint32 mapId, Position const& pos, uint8 level, uint8 team,
+        std::vector<std::pair<uint8, BotRole>> const& members);
+    void StopTestParties();
 
     void Update(uint32 diff);
 
@@ -129,6 +164,9 @@ private:
 
     void UpdatePartyBot(ForeverBot& bot, uint32 diff, std::vector<ObjectGuid>& toRemove);
     void UpdateWorldBot(ForeverBot& bot, uint32 diff, std::vector<ObjectGuid>& toRemove);
+    void UpdateLeaderBot(ForeverBot& bot, uint32 diff);
+    ObjectGuid FindOrCreateCharacter(uint8 team, uint8 classId, uint32 accountId, WorldSession* session, std::string& error,
+        CharacterDatabaseTransaction& pendingCommit);
     void BalanceWorldBots();
     bool PickWorldSpot(uint8 level, uint32& mapId, Position& pos);
     void BuildWorldSpots();
@@ -140,41 +178,14 @@ private:
     uint32 _worldTarget = 0;
     uint32 _balanceTimer = 0;
     std::vector<WorldSpot> _worldSpots;
+    bool _debug = false;
+    std::unordered_map<uint8, std::unordered_map<uint32, uint8>> _trainerSpells;   // class -> spell -> trainer level
+    std::unordered_set<uint32> _talentSpells;
+    std::unordered_set<uint32> _starterSpells;
+    std::unordered_map<uint32, uint8> _classBySpellFamily;
+    void RemoveNonClassicSpells(Player* bot);
 };
 
 #define sForeverBotMgr ForeverBotMgr::instance()
-
-class ForeverBotAI : public PlayerAI
-{
-public:
-    explicit ForeverBotAI(Player* player) : PlayerAI(player) { }
-
-    void UpdateAI(uint32 diff) override;
-
-private:
-    ForeverBot* GetBotData() const;
-    Player* GetOwner() const;
-    std::vector<Player*> GetGroupMembers(Player* owner) const;
-    Unit* SelectTarget(ForeverBot const& data, Player* owner, std::vector<Player*> const& members) const;
-    Unit* FindHuntTarget() const;
-    bool DoHeal(std::vector<Player*> const& members);
-    bool DoBuffs(std::vector<Player*> const& members);
-    bool DoAttackSpells(Unit* target, ForeverBot const& data);
-    bool TryCast(Unit* target, char const* spellName, bool requireNoAura = false);
-    SpellInfo const* FindBestSpell(char const* spellName) const;
-    void MoveForCombat(Unit* target, ForeverBot const& data);
-    bool IsChasing(Unit* target) const;
-    void FollowOwner(Player* owner, ForeverBot const& data);
-    void Wander(ForeverBot const& data);
-    void RegenOutOfCombat(uint32 elapsed);
-    bool IsCaster() const;
-    bool IsRanged() const;
-
-    uint32 _thinkTimer = 0;
-    uint32 _outOfCombatTime = 0;
-    uint32 _wanderTimer = 0;
-    std::unordered_map<std::string, uint32> _spellCache;   // spell name -> best known rank (0 = unknown)
-    uint8 _cachedLevel = 0;
-};
 
 #endif

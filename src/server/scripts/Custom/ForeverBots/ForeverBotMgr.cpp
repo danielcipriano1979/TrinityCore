@@ -5,6 +5,7 @@
  */
 
 #include "ForeverBots.h"
+#include "AI/BotAI.h"
 #include "AccountMgr.h"
 #include "CharacterCache.h"
 #include "CharacterPackets.h"
@@ -40,7 +41,7 @@ namespace
     constexpr char const* WorldAccountName = "FOREVERWORLD";
     constexpr uint32 MaxBotsPerOwner = 4;
     constexpr uint32 MaxWorldBots = 200;
-    constexpr uint32 ResurrectDelay = 5000;
+    constexpr uint32 ResurrectDelay = 15000;          // time for a healer to resurrect it first
     constexpr uint32 WorldResurrectDelay = 20000;
     constexpr float RegroupDistance = 120.0f;
     constexpr uint32 BalanceInterval = 5000;
@@ -256,7 +257,13 @@ ObjectGuid ForeverBotMgr::CreateCharacter(uint8 race, uint8 classId, uint32 acco
 ObjectGuid ForeverBotMgr::FindOrCreateCharacter(Player* owner, uint8 classId, uint32 accountId, WorldSession* session, std::string& error,
     CharacterDatabaseTransaction& pendingCommit)
 {
-    bool const horde = owner->GetTeam() == HORDE;
+    return FindOrCreateCharacter(owner->GetTeamId() == TEAM_HORDE ? TEAM_HORDE : TEAM_ALLIANCE, classId, accountId, session, error, pendingCommit);
+}
+
+ObjectGuid ForeverBotMgr::FindOrCreateCharacter(uint8 team, uint8 classId, uint32 accountId, WorldSession* session, std::string& error,
+    CharacterDatabaseTransaction& pendingCommit)
+{
+    bool const horde = team == TEAM_HORDE;
     std::vector<uint8> races;
     for (uint8 race : horde ? std::span<uint8 const>(HordeRaces) : std::span<uint8 const>(AllianceRaces))
         if (sObjectMgr->GetPlayerInfo(race, classId))
@@ -432,23 +439,161 @@ void ForeverBotMgr::StartWorldLogin(ForeverBot& bot)
     bot.Session->LoginBotCharacter(bot.Guid);
 }
 
-void ForeverBotMgr::LearnClassSpells(Player* bot)
+void ForeverBotMgr::LoadClassicSpells()
 {
-    ChrClassesEntry const* classEntry = sChrClassesStore.LookupEntry(bot->GetClass());
-    if (!classEntry)
-        return;
+    _trainerSpells.clear();
+    _talentSpells.clear();
+    _starterSpells.clear();
+    _classBySpellFamily.clear();
 
-    // what `.learn my spells` does, limited to the bot's level (trainers would sell these)
+    for (ChrClassesEntry const* classEntry : sChrClassesStore)
+        if (classEntry->SpellClassSet)
+            _classBySpellFamily[classEntry->SpellClassSet] = uint8(classEntry->ID);
+
+    auto classOf = [this](SpellInfo const* info) -> uint8
+    {
+        auto itr = _classBySpellFamily.find(info->SpellFamilyName);
+        return itr != _classBySpellFamily.end() ? itr->second : 0;
+    };
+
+    // what the class trainers teach (a trainer spell may be a "learn" spell: take what it teaches)
+    if (QueryResult result = WorldDatabase.Query("SELECT ts.SpellId, MIN(ts.ReqLevel) FROM trainer_spell ts JOIN trainer t ON t.Id = ts.TrainerId WHERE t.Type = 0 GROUP BY ts.SpellId"))
+    {
+        do
+        {
+            SpellInfo const* info = sSpellMgr->GetSpellInfo((*result)[0].GetUInt32(), DIFFICULTY_NONE);
+            uint8 const reqLevel = (*result)[1].GetUInt8();
+            if (!info)
+                continue;
+            std::vector<uint32> taught;
+            for (SpellEffectInfo const& effect : info->GetEffects())
+                if (effect.IsEffect(SPELL_EFFECT_LEARN_SPELL) && effect.TriggerSpell)
+                    taught.push_back(effect.TriggerSpell);
+            if (taught.empty())
+                taught.push_back(info->Id);
+            for (uint32 spellId : taught)
+                if (SpellInfo const* learned = sSpellMgr->GetSpellInfo(spellId, DIFFICULTY_NONE))
+                    if (uint8 classId = classOf(learned))
+                    {
+                        auto [itr, inserted] = _trainerSpells[classId].try_emplace(spellId, reqLevel);
+                        if (!inserted)
+                            itr->second = std::min(itr->second, reqLevel);
+                    }
+        } while (result->NextRow());
+    }
+
+    // class quest rewards (Defensive Stance, Bear Form, totems, demons...): allowed like the trainer spells
+    if (QueryResult result = WorldDatabase.Query("SELECT RewardSpell FROM quest_template WHERE RewardSpell <> 0 UNION SELECT RewardDisplaySpell1 FROM quest_template WHERE RewardDisplaySpell1 <> 0"))
+    {
+        do
+        {
+            SpellInfo const* info = sSpellMgr->GetSpellInfo((*result)[0].GetUInt32(), DIFFICULTY_NONE);
+            if (!info)
+                continue;
+            _talentSpells.insert(info->Id);
+            for (SpellEffectInfo const& effect : info->GetEffects())
+                if (effect.IsEffect(SPELL_EFFECT_LEARN_SPELL) && effect.TriggerSpell)
+                    _talentSpells.insert(effect.TriggerSpell);
+        } while (result->NextRow());
+    }
+
+    // the class quest spells LearnClassSpells gives bots (whatever the quest data says)
+    for (uint32 spellId : { 71u, 2458u, 5487u, 8071u, 3599u, 5394u, 697u, 712u, 691u, 7328u })
+        _talentSpells.insert(spellId);
+
+    // talents (trait definitions)
+    for (TraitDefinitionEntry const* definition : sTraitDefinitionStore)
+    {
+        if (definition->SpellID)
+            _talentSpells.insert(definition->SpellID);
+        if (definition->VisibleSpellID)
+            _talentSpells.insert(definition->VisibleSpellID);
+    }
+
+    // what a new character of the class knows at level 1 (learned with its skills)
     for (SkillLineAbilityEntry const* ability : sSkillLineAbilityStore)
     {
-        SpellInfo const* spellInfo = sSpellMgr->GetSpellInfo(ability->Spell, DIFFICULTY_NONE);
-        if (!spellInfo || spellInfo->SpellLevel == 0 || spellInfo->SpellLevel > bot->GetLevel())
+        if (ability->GetAcquireMethod() != SkillLineAbilityAcquireMethod::AutomaticSkillRank
+            && ability->GetAcquireMethod() != SkillLineAbilityAcquireMethod::AutomaticCharLevel)
             continue;
-        if (spellInfo->SpellFamilyName != classEntry->SpellClassSet || !bot->IsSpellFitByClassAndRace(spellInfo->Id))
+        if (SpellInfo const* info = sSpellMgr->GetSpellInfo(ability->Spell, DIFFICULTY_NONE); info && info->SpellLevel <= 1 && ability->MinSkillLineRank <= 1)
+            _starterSpells.insert(info->Id);
+    }
+
+    size_t trainer = 0;
+    for (auto const& [classId, spells] : _trainerSpells)
+        trainer += spells.size();
+    TC_LOG_INFO("server.loading", "ForeverBots: Classic class spells: {} from trainers ({} classes), {} talent spells, {} level 1 spells",
+        trainer, _trainerSpells.size(), _talentSpells.size(), _starterSpells.size());
+}
+
+bool ForeverBotMgr::IsClassicSpell(uint8 classId, SpellInfo const* spellInfo) const
+{
+    auto family = _classBySpellFamily.find(spellInfo->SpellFamilyName);
+    if (family == _classBySpellFamily.end() || family->second != classId)
+        return true;            // not a class spell: racials, weapon skills, wand, generic spells
+    auto trainer = _trainerSpells.find(classId);
+    if (trainer != _trainerSpells.end() && trainer->second.contains(spellInfo->Id))
+        return true;
+    return _talentSpells.contains(spellInfo->Id) || _starterSpells.contains(spellInfo->Id);
+}
+
+// spells a Classic character of this class can't have (learned by older bot code from the full client data)
+void ForeverBotMgr::RemoveNonClassicSpells(Player* bot)
+{
+    std::vector<uint32> remove;
+    for (auto const& [spellId, known] : bot->GetSpellMap())
+    {
+        if (known.state == PLAYERSPELL_REMOVED || known.dependent)
             continue;
-        if (bot->HasSpell(spellInfo->Id) || !SpellMgr::IsSpellValid(spellInfo, bot, false))
+        SpellInfo const* info = sSpellMgr->GetSpellInfo(spellId, DIFFICULTY_NONE);
+        if (info && !IsClassicSpell(bot->GetClass(), info))
+            remove.push_back(spellId);
+    }
+    for (uint32 spellId : remove)
+        bot->RemoveSpell(spellId, false, false);
+    if (!remove.empty())
+        TC_LOG_DEBUG("misc", "ForeverBots: {} unlearned {} non-Classic spells", bot->GetName(), remove.size());
+}
+
+void ForeverBotMgr::LearnClassSpells(Player* bot)
+{
+    if (_trainerSpells.empty())
+        LoadClassicSpells();
+    RemoveNonClassicSpells(bot);
+
+    // the spells a Classic character gets from its class quests (a bot doesn't do them)
+    struct QuestSpell { uint8 ClassId; uint8 Level; uint32 SpellId; };
+    static QuestSpell const QuestSpells[] =
+    {
+        { CLASS_WARRIOR, 10, 71 },      // Defensive Stance
+        { CLASS_WARRIOR, 30, 2458 },    // Berserker Stance
+        { CLASS_DRUID,   10, 5487 },    // Bear Form
+        { CLASS_SHAMAN,   4, 8071 },    // Stoneskin Totem
+        { CLASS_SHAMAN,  10, 3599 },    // Searing Totem
+        { CLASS_SHAMAN,  20, 5394 },    // Healing Stream Totem
+        { CLASS_WARLOCK, 10, 697 },     // Summon Voidwalker
+        { CLASS_WARLOCK, 20, 712 },     // Summon Succubus
+        { CLASS_WARLOCK, 30, 691 },     // Summon Felhunter
+        { CLASS_PALADIN, 12, 7328 },    // Redemption
+    };
+    for (QuestSpell const& quest : QuestSpells)
+        if (quest.ClassId == bot->GetClass() && quest.Level <= bot->GetLevel() && !bot->HasSpell(quest.SpellId))
+            if (sSpellMgr->GetSpellInfo(quest.SpellId, DIFFICULTY_NONE))
+                bot->LearnSpell(quest.SpellId, false, 0, true);
+
+    // what the class trainers sell, up to the bot's level
+    auto itr = _trainerSpells.find(bot->GetClass());
+    if (itr == _trainerSpells.end())
+        return;
+    for (auto const& [spellId, reqLevel] : itr->second)
+    {
+        if (reqLevel > bot->GetLevel() || bot->HasSpell(spellId))
             continue;
-        bot->LearnSpell(spellInfo->Id, false, 0, true);
+        SpellInfo const* spellInfo = sSpellMgr->GetSpellInfo(spellId, DIFFICULTY_NONE);
+        if (!spellInfo || !bot->IsSpellFitByClassAndRace(spellId) || !SpellMgr::IsSpellValid(spellInfo, bot, false))
+            continue;
+        bot->LearnSpell(spellId, false, 0, true);
     }
 }
 
@@ -1321,6 +1466,8 @@ void ForeverBotMgr::UpdatePartyBot(ForeverBot& bot, uint32 diff, std::vector<Obj
 
     if (botPlayer->isDead())
     {
+        if (!bot.DeadTimer)
+            ++bot.Deaths;
         bot.DeadTimer += diff;
         if (bot.DeadTimer >= ResurrectDelay && owner->IsAlive() && !owner->IsInCombat())
         {
@@ -1391,12 +1538,33 @@ void ForeverBotMgr::Update(uint32 diff)
 
         if (bot.IsWorldBot())
             UpdateWorldBot(bot, diff, toRemove);
+        else if (bot.Leader)
+            UpdateLeaderBot(bot, diff);
         else
             UpdatePartyBot(bot, diff, toRemove);
     }
 
     for (ObjectGuid guid : toRemove)
         RemoveBot(guid);
+
+    // a bot-only party's leader is in the world: recruit its members (outside the loop, AddBot changes _bots)
+    std::vector<std::pair<ObjectGuid, std::vector<std::pair<uint8, BotRole>>>> recruits;
+    for (auto& [guid, bot] : _bots)
+        if (bot.Leader && bot.Ready && !bot.PendingRecruits.empty())
+            recruits.emplace_back(guid, std::move(bot.PendingRecruits));
+    for (auto& [leaderGuid, members] : recruits)
+    {
+        ForeverBot* leader = GetBot(leaderGuid);
+        Player* leaderPlayer = leader && leader->Session ? leader->Session->GetPlayer() : nullptr;
+        if (!leaderPlayer)
+            continue;
+        for (auto const& [classId, role] : members)
+        {
+            std::string error = AddBot(leaderPlayer, classId, role);
+            if (!error.empty())
+                TC_LOG_ERROR("misc", "ForeverBots: test party member ({} {}) not added: {}", classId, BotRoleName(role), error);
+        }
+    }
 
     _balanceTimer += diff;
     if (_balanceTimer >= BalanceInterval)
@@ -1405,4 +1573,126 @@ void ForeverBotMgr::Update(uint32 diff)
         if (_worldTarget || CountWorldBots())
             BalanceWorldBots();
     }
+}
+
+// ---------------------------------------------------------------------------------------------------------------------
+// Bot-only parties (.bottest): a leader bot (the tank) and members owned by it, for tests without a client
+// ---------------------------------------------------------------------------------------------------------------------
+std::string ForeverBotMgr::StartTestParty(uint32 mapId, Position const& pos, uint8 level, uint8 team, std::vector<std::pair<uint8, BotRole>> const& members)
+{
+    if (members.empty())
+        return "No members.";
+
+    uint32 accountId = GetBotAccountId();
+    if (!accountId)
+        return "Could not create the bot account.";
+
+    WorldSession* session = CreateBotSession(accountId, PartyAccountName);
+    std::string error;
+    CharacterDatabaseTransaction pendingCommit;
+    ObjectGuid guid = FindOrCreateCharacter(team, members.front().first, accountId, session, error, pendingCommit);
+    if (guid.IsEmpty())
+    {
+        delete session;
+        return error;
+    }
+
+    ForeverBot& bot = _bots[guid];
+    bot.Guid = guid;
+    bot.Leader = true;
+    bot.Role = members.front().second;
+    bot.WorldLevel = level;
+    bot.Session = session;
+    bot.PendingRecruits.assign(members.begin() + 1, members.end());
+
+    if (pendingCommit)
+    {
+        bot.Creating = true;
+        session->AddTransactionCallback(CharacterDatabase.AsyncCommitTransaction(pendingCommit)).AfterComplete([this, guid, mapId, pos](bool success)
+        {
+            ForeverBot* created = GetBot(guid);
+            if (!created)
+                return;
+            created->Creating = false;
+            if (!success)
+            {
+                created->CreateFailed = true;
+                return;
+            }
+            PlaceCharacterAt(guid, mapId, pos);
+            StartWorldLogin(*created);
+        });
+    }
+    else
+    {
+        PlaceCharacterAt(guid, mapId, pos);
+        StartWorldLogin(bot);
+    }
+    TC_LOG_INFO("misc", "ForeverBots: test party starting on map {} ({} members, level {})", mapId, members.size(), level);
+    return {};
+}
+
+void ForeverBotMgr::StopTestParties()
+{
+    std::vector<ObjectGuid> leaders;
+    for (auto const& [guid, bot] : _bots)
+        if (bot.Leader)
+            leaders.push_back(guid);
+    for (ObjectGuid leader : leaders)
+    {
+        RemoveBotsOf(leader);
+        RemoveBot(leader);
+    }
+}
+
+void ForeverBotMgr::UpdateLeaderBot(ForeverBot& bot, uint32 diff)
+{
+    Player* botPlayer = bot.Session->GetPlayer();
+    if (!botPlayer->isDead())
+    {
+        bot.DeadTimer = 0;
+        return;
+    }
+
+    if (!bot.DeadTimer)
+        ++bot.Deaths;
+    bot.DeadTimer += diff;
+
+    // the healer gets its chance; after a wipe (nobody fighting any more) the leader stands back up
+    bool fighting = false;
+    for (ForeverBot* member : GetBotsOf(bot.Guid))
+        if (Player* memberPlayer = member->Session ? member->Session->GetPlayer() : nullptr)
+            if (memberPlayer->IsAlive() && memberPlayer->IsInCombat())
+                fighting = true;
+    if (!fighting && bot.DeadTimer >= ResurrectDelay)
+    {
+        botPlayer->ResurrectPlayer(0.5f);
+        botPlayer->SpawnCorpseBones();
+        bot.DeadTimer = 0;
+    }
+}
+
+void ForeverBotMgr::SetDebug(bool on)
+{
+    _debug = on;
+    for (auto& [guid, bot] : _bots)
+        bot.Debug = on;
+}
+
+std::vector<std::string> ForeverBotMgr::DescribeTelemetry()
+{
+    std::vector<std::string> lines;
+    for (auto const& [guid, bot] : _bots)
+    {
+        Player* p = bot.Session ? bot.Session->GetPlayer() : nullptr;
+        if (!p || !p->IsInWorld())
+            continue;
+        float const mana = p->GetMaxPower(POWER_MANA) ? p->GetPowerPct(POWER_MANA) : 0.0f;
+        float const seconds = std::max(1.0f, float(bot.CombatTime) / 1000.0f);
+        lines.push_back(Trinity::StringFormat("{} lvl {} {} {}{} | {} hp {:.0f}% mana {:.0f}% | dps {:.0f} hps {:.0f} overheal {} | deaths {} kills {} interrupts {} dispels {} taunts {} cc {} res {} | casts ok {} failed {} | {}",
+            p->GetName(), p->GetLevel(), BotRoleName(bot.Role), bot.Leader ? "leader " : "", bot.IsWorldBot() ? "world" : "party",
+            bot.State, p->GetHealthPct(), mana, float(bot.DamageDone) / seconds, float(bot.HealingDone) / seconds, bot.Overhealing,
+            bot.Deaths, bot.Kills, bot.Interrupts, bot.Dispels, bot.Taunts, bot.CrowdControls, bot.Resurrections, bot.CastsOk, bot.CastsFailed, bot.Decision));
+    }
+    return lines;
 }
