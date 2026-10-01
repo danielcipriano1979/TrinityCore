@@ -1777,7 +1777,7 @@ void WorldSession::SendFeatureSystemStatus()
     features.CfgRealmRecID = sRealmList->GetCurrentRealmId().Realm;
     features.CommercePricePollTimeSeconds = 300;
     features.VoiceEnabled = false;
-    features.BpayStoreAvailable = true;             // Classic 1.60: custom shop2 catalog shop (classic_re/shop_server.py)
+    features.BpayStoreAvailable = false;            // local: shop button shown as unavailable (the repack enables a custom shop2 catalog here)
     features.CommerceServerEnabled = true;
 
     // Classic 1.60: the realm's season. Content set 137 = Cfg_SuperDistrict 2 "Normal" (bnetserver Realm.CfgContentSetID).

@@ -108,7 +108,7 @@ void WorldSession::SendSetTimeZoneInformation()
 void WorldSession::SendFeatureSystemStatusGlueScreen()
 {
     WorldPackets::System::FeatureSystemStatusGlueScreen features;
-    features.BpayStoreAvailable = true;             // Classic 1.60: custom shop2 catalog shop (classic_re/shop_server.py)
+    features.BpayStoreAvailable = false;            // local: shop button shown as unavailable (the repack enables a custom shop2 catalog here)
     features.BpayStoreDisabledByParentalControls = false;
     features.CommerceServerEnabled = true;
     features.CharUndeleteEnabled = sWorld->getBoolConfig(CONFIG_FEATURE_SYSTEM_CHARACTER_UNDELETE_ENABLED);

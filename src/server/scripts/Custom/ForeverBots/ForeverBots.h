@@ -114,7 +114,7 @@ private:
         CharacterDatabaseTransaction& pendingCommit);
     void PlaceCharacterAt(ObjectGuid guid, Player* owner);
     void PlaceCharacterAt(ObjectGuid guid, uint32 mapId, Position const& pos);
-    void EnsureCustomizations(ObjectGuid guid);
+    void EnsureCustomizations(ObjectGuid guid, WorldSession* session);
     void StartLogin(ForeverBot& bot, Player* owner);
     void StartWorldLogin(ForeverBot& bot);
     void LoginWhenSaved(ForeverBot& bot, CharacterDatabaseTransaction& pendingCommit, bool world);

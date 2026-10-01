@@ -177,6 +177,30 @@ static void RandomCustomizations(uint8 race, uint8 classId, uint8 sex, std::vect
     }
 }
 
+// A random look the server itself accepts: Player::LoadFromDB rejects a character whose choices fail
+// WorldSession::ValidateAppearance (dependent choices, sorting...), so every candidate goes through it. No valid set
+// -> no customizations at all (the client then shows a default look, but the bot logs in).
+static void PickValidCustomizations(WorldSession* session, uint8 race, uint8 classId, uint8 sex, std::vector<std::pair<uint32, uint32>>& out)
+{
+    for (int attempt = 0; attempt < 20; ++attempt)
+    {
+        out.clear();
+        RandomCustomizations(race, classId, sex, out);
+        std::ranges::sort(out);
+
+        std::vector<UF::ChrCustomizationChoice> choices;
+        for (auto const& [optionId, choiceId] : out)
+        {
+            UF::ChrCustomizationChoice& choice = choices.emplace_back();
+            choice.ChrCustomizationOptionID = optionId;
+            choice.ChrCustomizationChoiceID = choiceId;
+        }
+        if (session->ValidateAppearance(Races(race), Classes(classId), Gender(sex), { choices.data(), choices.data() + choices.size() }))
+            return;
+    }
+    out.clear();
+}
+
 ObjectGuid ForeverBotMgr::CreateCharacter(uint8 race, uint8 classId, uint32 accountId, WorldSession* session, std::string& error,
     CharacterDatabaseTransaction& pendingCommit)
 {
@@ -194,7 +218,7 @@ ObjectGuid ForeverBotMgr::CreateCharacter(uint8 race, uint8 classId, uint32 acco
     createInfo.Name = name;
 
     std::vector<std::pair<uint32, uint32>> customizations;
-    RandomCustomizations(race, classId, createInfo.Sex, customizations);
+    PickValidCustomizations(session, race, classId, createInfo.Sex, customizations);
     for (auto const& [optionId, choiceId] : customizations)
     {
         WorldPackets::Character::ChrCustomizationChoice& choice = createInfo.Customizations.emplace_back();
@@ -263,20 +287,36 @@ ObjectGuid ForeverBotMgr::FindOrCreateCharacter(Player* owner, uint8 classId, ui
     return CreateCharacter(Trinity::Containers::SelectRandomContainerElement(races), classId, accountId, session, error, pendingCommit);
 }
 
-void ForeverBotMgr::EnsureCustomizations(ObjectGuid guid)
+void ForeverBotMgr::EnsureCustomizations(ObjectGuid guid, WorldSession* session)
 {
-    // bots created before the appearance fix have none (async like the position update: the login query runs after them,
-    // and after the save of a bot that just logged out - the character database has a single async worker)
-    if (QueryResult count = CharacterDatabase.Query(Trinity::StringFormat("SELECT COUNT(*) FROM character_customizations WHERE guid = {}", guid.GetCounter()).c_str()))
-        if ((*count)[0].GetUInt64() > 0)
-            return;
-
     QueryResult info = CharacterDatabase.Query(Trinity::StringFormat("SELECT race, gender, class FROM characters WHERE guid = {}", guid.GetCounter()).c_str());
     if (!info)
         return;
+    uint8 const race = (*info)[0].GetUInt8();
+    uint8 const sex = (*info)[1].GetUInt8();
+    uint8 const classId = (*info)[2].GetUInt8();
 
+    // keep the current look if the server accepts it (Player::LoadFromDB refuses the whole character otherwise)
+    std::vector<UF::ChrCustomizationChoice> current;
+    if (QueryResult rows = CharacterDatabase.Query(Trinity::StringFormat(
+        "SELECT chrCustomizationOptionID, chrCustomizationChoiceID FROM character_customizations WHERE guid = {} ORDER BY chrCustomizationOptionID", guid.GetCounter()).c_str()))
+    {
+        do
+        {
+            UF::ChrCustomizationChoice& choice = current.emplace_back();
+            choice.ChrCustomizationOptionID = (*rows)[0].GetUInt32();
+            choice.ChrCustomizationChoiceID = (*rows)[1].GetUInt32();
+        } while (rows->NextRow());
+    }
+    if (!current.empty() && session->ValidateAppearance(Races(race), Classes(classId), Gender(sex), { current.data(), current.data() + current.size() }))
+        return;
+
+    // none (bots made before the appearance fix) or invalid ones: a new valid look. Async like the position update:
+    // the login query runs after these (and after the save of a bot that just logged out), the character database
+    // has a single async worker
     std::vector<std::pair<uint32, uint32>> customizations;
-    RandomCustomizations((*info)[0].GetUInt8(), (*info)[2].GetUInt8(), (*info)[1].GetUInt8(), customizations);
+    PickValidCustomizations(session, race, classId, sex, customizations);
+    CharacterDatabase.Execute(Trinity::StringFormat("DELETE FROM character_customizations WHERE guid = {}", guid.GetCounter()).c_str());
     for (auto const& [optionId, choiceId] : customizations)
         CharacterDatabase.Execute(Trinity::StringFormat("INSERT INTO character_customizations (guid, chrCustomizationOptionID, chrCustomizationChoiceID) VALUES ({}, {}, {})",
             guid.GetCounter(), optionId, choiceId).c_str());
@@ -379,7 +419,7 @@ std::string ForeverBotMgr::AddBot(Player* owner, uint8 classId, BotRole role)
 
 void ForeverBotMgr::StartLogin(ForeverBot& bot, Player* owner)
 {
-    EnsureCustomizations(bot.Guid);
+    EnsureCustomizations(bot.Guid, bot.Session);
     PlaceCharacterAt(bot.Guid, owner);
     bot.Session->SetBotBeforeAddToMap([this, guid = bot.Guid](Player* botPlayer) { PrepareBeforeWorld(guid, botPlayer); });
     bot.Session->LoginBotCharacter(bot.Guid);
@@ -387,7 +427,7 @@ void ForeverBotMgr::StartLogin(ForeverBot& bot, Player* owner)
 
 void ForeverBotMgr::StartWorldLogin(ForeverBot& bot)
 {
-    EnsureCustomizations(bot.Guid);
+    EnsureCustomizations(bot.Guid, bot.Session);
     bot.Session->SetBotBeforeAddToMap([this, guid = bot.Guid](Player* botPlayer) { PrepareBeforeWorld(guid, botPlayer); });
     bot.Session->LoginBotCharacter(bot.Guid);
 }
