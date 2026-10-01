@@ -8,11 +8,15 @@
  *   .bot follow | stay | attack        orders to all your bots (attack = your current target)
  *   .bot passive | active              stop / resume fighting
  *   .bot summon                        teleport your bots next to you
+ *   .bot world [count]                 world bots: keeps <count> of them hunting around the world (0 = none)
+ *
+ * The world bot count starts from ForeverBots.WorldBots in worldserver.conf (default 0).
  */
 
 #include "ForeverBots.h"
 #include "Chat.h"
 #include "ChatCommand.h"
+#include "Config.h"
 #include "Language.h"
 #include "ObjectAccessor.h"
 #include "Player.h"
@@ -102,8 +106,26 @@ public:
         static ChatCommandTable commandTable =
         {
             { "bot", HandleBotCommand, rbac::RBAC_PERM_COMMAND_COMMANDS, Console::No },   // every player, like .commands
+            // console / GM: state of every bot, and the world bot count (also from the RA console)
+            { "botinfo", HandleBotInfoCommand, rbac::RBAC_PERM_COMMAND_SERVER_INFO, Console::Yes },
+            { "botworld", HandleBotWorldCommand, rbac::RBAC_PERM_COMMAND_SERVER_INFO, Console::Yes },
         };
         return commandTable;
+    }
+
+    static bool HandleBotWorldCommand(ChatHandler* handler, Optional<uint32> count)
+    {
+        if (count)
+            sForeverBotMgr->SetWorldBotCount(*count);
+        handler->PSendSysMessage("ForeverBots: world bots {} online, target {}.", sForeverBotMgr->CountWorldBots(), sForeverBotMgr->GetWorldBotTarget());
+        return true;
+    }
+
+    static bool HandleBotInfoCommand(ChatHandler* handler)
+    {
+        for (std::string const& line : sForeverBotMgr->DescribeBots())
+            handler->SendSysMessage(line);
+        return true;
     }
 
     static bool HandleBotCommand(ChatHandler* handler, Tail args)
@@ -167,6 +189,22 @@ public:
             return true;
         }
 
+        if (action == "world")
+        {
+            if (words.size() >= 2)
+            {
+                Optional<uint32> count = Trinity::StringTo<uint32>(words[1]);
+                if (!count)
+                {
+                    chat.SendSysMessage("Usage: .bot world <count> (0 logs every world bot out)");
+                    return true;
+                }
+                sForeverBotMgr->SetWorldBotCount(*count);
+            }
+            chat.PSendSysMessage("ForeverBots: world bots {} online, target {}.", sForeverBotMgr->CountWorldBots(), sForeverBotMgr->GetWorldBotTarget());
+            return true;
+        }
+
         std::vector<ForeverBot*> bots = sForeverBotMgr->GetBotsOf(player->GetGUID());
 
         if (action == "list")
@@ -214,7 +252,7 @@ public:
             else if (action == "summon")  { bot->SummonRequested = true; }
             else
             {
-                chat.SendSysMessage("Usage: .bot add <class> [tank|heal|dps] | remove [name|all] | list | follow | stay | attack | passive | active | summon");
+                chat.SendSysMessage("Usage: .bot add <class> [tank|heal|dps] | remove [name|all] | list | follow | stay | attack | passive | active | summon | world [count]");
                 return true;
             }
         }
@@ -227,6 +265,11 @@ class forever_bots_worldscript : public WorldScript
 {
 public:
     forever_bots_worldscript() : WorldScript("forever_bots_worldscript") { }
+
+    void OnStartup() override
+    {
+        sForeverBotMgr->SetWorldBotCount(uint32(sConfigMgr->GetIntDefault("ForeverBots.WorldBots", 0)));
+    }
 
     void OnUpdate(uint32 diff) override
     {

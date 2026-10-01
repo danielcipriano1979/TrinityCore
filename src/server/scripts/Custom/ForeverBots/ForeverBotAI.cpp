@@ -4,8 +4,13 @@
  */
 
 #include "ForeverBots.h"
+#include "CellImpl.h"
+#include "Creature.h"
+#include "GridNotifiers.h"
+#include "GridNotifiersImpl.h"
 #include "Group.h"
 #include "MotionMaster.h"
+#include "Random.h"
 #include "ObjectAccessor.h"
 #include "Player.h"
 #include "SpellHistory.h"
@@ -354,7 +359,7 @@ void ForeverBotAI::MoveForCombat(Unit* target, ForeverBot const& data)
     }
 
     MotionMaster* motion = me->GetMotionMaster();
-    if (data.Role == BotRole::Heal)
+    if (data.Role == BotRole::Heal && !data.IsWorldBot())
         return;                             // the healer keeps following its owner during the fight
 
     if (IsCaster() || IsRanged())
@@ -407,14 +412,20 @@ void ForeverBotAI::UpdateAI(uint32 diff)
     if (!data || !data->Ready)
         return;
 
-    Player* owner = GetOwner();
-    std::vector<Player*> members = GetGroupMembers(owner);
+    Player* owner = data->IsWorldBot() ? nullptr : GetOwner();
+    std::vector<Player*> members = data->IsWorldBot() ? std::vector<Player*>{ me } : GetGroupMembers(owner);
 
-    // healers first look after the group
-    if (data->Role == BotRole::Heal && DoHeal(members))
+    // healers first look after the group (a world bot only after itself)
+    if ((data->Role == BotRole::Heal || data->IsWorldBot()) && DoHeal(members))
         return;
 
     Unit* target = SelectTarget(*data, owner, members);
+
+    // a world bot looks for something of its level to hunt once it is rested
+    if (!target && data->IsWorldBot() && me->GetHealthPct() > 70.0f
+        && (me->GetPowerType() != POWER_MANA || me->GetPowerPct(POWER_MANA) > 40.0f))
+        target = FindHuntTarget();
+
     if (target)
     {
         _outOfCombatTime = 0;
@@ -432,23 +443,87 @@ void ForeverBotAI::UpdateAI(uint32 diff)
     if (me->GetVictim())
         me->AttackStop();
 
-    if (data->Role != BotRole::Heal && DoHeal(members))     // hybrid classes top the group off between fights
+    if (data->Role != BotRole::Heal && !data->IsWorldBot() && DoHeal(members))     // hybrid classes top the group off between fights
         return;
 
-    FollowOwner(owner, *data);
+    if (data->IsWorldBot())
+        Wander(*data);
+    else
+        FollowOwner(owner, *data);
 
     if (!me->IsInCombat())
     {
-        _outOfCombatTime += elapsed;
-        if (_outOfCombatTime >= OutOfCombatRegenDelay)
-        {
-            // stands in for eating and drinking between pulls
-            if (me->GetHealthPct() < 100.0f)
-                me->ModifyHealth(me->CountPctFromMaxHealth(6));
-            if (me->GetPowerType() == POWER_MANA && me->GetPowerPct(POWER_MANA) < 100.0f)
-                me->ModifyPower(POWER_MANA, me->GetMaxPower(POWER_MANA) * 6 / 100);
-        }
+        RegenOutOfCombat(elapsed);
         if (!me->isMoving())
             DoBuffs(members);
     }
+}
+
+void ForeverBotAI::RegenOutOfCombat(uint32 elapsed)
+{
+    _outOfCombatTime += elapsed;
+    if (_outOfCombatTime < OutOfCombatRegenDelay)
+        return;
+
+    // stands in for eating and drinking between pulls
+    if (me->GetHealthPct() < 100.0f)
+        me->ModifyHealth(me->CountPctFromMaxHealth(6));
+    if (me->GetPowerType() == POWER_MANA && me->GetPowerPct(POWER_MANA) < 100.0f)
+        me->ModifyPower(POWER_MANA, me->GetMaxPower(POWER_MANA) * 6 / 100);
+}
+
+namespace
+{
+    // creatures a world bot may hunt: alive, attackable, around its level, not elite, not someone else's fight
+    struct HuntCheck
+    {
+        Player* Me;
+        float Range;
+        bool operator()(Creature* creature) const
+        {
+            if (!creature->IsAlive() || !Me->IsWithinDistInMap(creature, Range))
+                return false;
+            if (creature->IsCritter() || creature->IsElite() || creature->IsCivilian() || creature->IsTotem())
+                return false;
+            if (creature->GetCreatureTemplate()->npcflag)
+                return false;
+            if (creature->IsInCombat() && creature->GetVictim() != Me)
+                return false;
+            int32 const diff = int32(creature->GetLevel()) - int32(Me->GetLevel());
+            if (diff < -5 || diff > 2)
+                return false;
+            return Me->IsValidAttackTarget(creature) && Me->IsWithinLOSInMap(creature);
+        }
+    };
+}
+
+Unit* ForeverBotAI::FindHuntTarget() const
+{
+    std::list<Creature*> found;
+    HuntCheck check{ me, 35.0f };
+    Trinity::CreatureListSearcher<HuntCheck> searcher(me, found, check);
+    Cell::VisitGridObjects(me, searcher, 35.0f);
+
+    Creature* nearest = nullptr;
+    for (Creature* creature : found)
+        if (!nearest || me->GetDistance(creature) < me->GetDistance(nearest))
+            nearest = creature;
+    return nearest;
+}
+
+void ForeverBotAI::Wander(ForeverBot const& data)
+{
+    if (me->isMoving() || me->HasUnitState(UNIT_STATE_CASTING))
+        return;
+
+    if (_wanderTimer > ThinkInterval)
+    {
+        _wanderTimer -= ThinkInterval;
+        return;
+    }
+    _wanderTimer = urand(12000, 30000);
+
+    // stroll around its hunting ground (a bit further out when it has been resting long)
+    Position pos = me->GetRandomPoint(data.Home, 30.0f);
+    me->GetMotionMaster()->MovePoint(1, pos);
 }

@@ -1,6 +1,7 @@
 /*
- * Forever bots: the manager (bot sessions, characters, group, level, death and map changes).
- * Everything here runs on the world thread (WorldScript::OnUpdate and chat commands), outside map updates.
+ * Forever bots: the manager (bot sessions, characters, appearance, gear, group, level, death, map changes and
+ * world bots). Everything here runs on the world thread (WorldScript::OnUpdate and chat commands), outside map
+ * updates; PrepareBeforeWorld runs inside a bot's login (also the world thread, from the session update).
  */
 
 #include "ForeverBots.h"
@@ -8,10 +9,13 @@
 #include "CharacterCache.h"
 #include "CharacterPackets.h"
 #include "Chat.h"
+#include "Containers.h"
 #include "DatabaseEnv.h"
 #include "DB2Stores.h"
 #include "Group.h"
 #include "GroupMgr.h"
+#include "Item.h"
+#include "ItemTemplate.h"
 #include "Log.h"
 #include "MotionMaster.h"
 #include "ObjectAccessor.h"
@@ -22,23 +26,39 @@
 #include "SpellInfo.h"
 #include "SpellMgr.h"
 #include "StringFormat.h"
+#include "TraitMgr.h"
+#include "TraitPacketsCommon.h"
+#include "UpdateFields.h"
 #include "World.h"
+#include <ranges>
+#include <set>
 #include "WorldSession.h"
 
 namespace
 {
-    constexpr char const* BotAccountName = "FOREVERBOTS";
+    constexpr char const* PartyAccountName = "FOREVERBOTS";
+    constexpr char const* WorldAccountName = "FOREVERWORLD";
     constexpr uint32 MaxBotsPerOwner = 4;
+    constexpr uint32 MaxWorldBots = 200;
     constexpr uint32 ResurrectDelay = 5000;
+    constexpr uint32 WorldResurrectDelay = 20000;
     constexpr float RegroupDistance = 120.0f;
+    constexpr uint32 BalanceInterval = 5000;
+    constexpr uint32 MaxLoginsPerBalance = 3;       // spreads world bot logins over time
+    constexpr uint32 MaxVanillaItemId = 24500;      // the client DB2s also carry later expansions' items
 
     uint8 const HordeRaces[] = { 2 /*orc*/, 5 /*undead*/, 6 /*tauren*/, 8 /*troll*/ };
     uint8 const AllianceRaces[] = { 1 /*human*/, 3 /*dwarf*/, 4 /*night elf*/, 7 /*gnome*/ };
+    uint8 const BotClasses[] = { CLASS_WARRIOR, CLASS_PALADIN, CLASS_HUNTER, CLASS_ROGUE, CLASS_PRIEST, CLASS_SHAMAN, CLASS_MAGE, CLASS_WARLOCK, CLASS_DRUID };
 
     char const* const NameStarts[] = { "Ka", "Mor", "Thra", "Gru", "Zul", "Vor", "Bel", "Dra", "Ser", "Ul", "Gar", "Nok", "Rha", "Tor", "Jin",
-        "Bro", "Ela", "Fen", "Kor", "Lia", "Mag", "Ora", "Sha", "Tal", "Vel", "Yri", "Azu", "Dun", "Hel", "Iso" };
+        "Bro", "Ela", "Fen", "Kor", "Lia", "Mag", "Ora", "Sha", "Tal", "Vel", "Yri", "Azu", "Dun", "Hel", "Iso", "Bra", "Cel", "Eri", "Gwe",
+        "Hal", "Ith", "Lor", "Myr", "Nai", "Qua", "Rok", "Syl", "Tha", "Urs", "Val", "Wre", "Xan", "Zer" };
+    char const* const NameMiddles[] = { "", "", "", "a", "e", "i", "o", "ra", "li", "na", "do" };
     char const* const NameEnds[] = { "gar", "rok", "zan", "thas", "dor", "mir", "nok", "ria", "las", "gon", "rek", "ven", "dra", "mok",
-        "lin", "tha", "ros", "zul", "nar", "wyn", "bek", "dil", "sha", "tor", "via", "gul", "ren", "kan" };
+        "lin", "tha", "ros", "zul", "nar", "wyn", "bek", "dil", "sha", "tor", "via", "gul", "ren", "kan", "dus", "mar", "eth", "ius" };
+
+    enum ItemMod : int32 { MOD_AGILITY = 3, MOD_STRENGTH = 4, MOD_INTELLECT = 5, MOD_SPIRIT = 6, MOD_STAMINA = 7 };
 }
 
 char const* BotRoleName(BotRole role)
@@ -57,30 +77,42 @@ ForeverBotMgr* ForeverBotMgr::instance()
     return &instance;
 }
 
-uint32 ForeverBotMgr::GetBotAccountId()
+static uint32 GetOrCreateAccount(char const* name)
 {
-    if (_accountId)
-        return _accountId;
-
-    _accountId = AccountMgr::GetId(BotAccountName);
-    if (!_accountId)
+    uint32 id = AccountMgr::GetId(name);
+    if (!id)
     {
         std::string password;
         for (int i = 0; i < 16; ++i)
             password += char('a' + urand(0, 25));
-        sAccountMgr->CreateAccount(BotAccountName, password);
-        _accountId = AccountMgr::GetId(BotAccountName);
+        sAccountMgr->CreateAccount(name, password);
+        id = AccountMgr::GetId(name);
     }
+    return id;
+}
+
+uint32 ForeverBotMgr::GetBotAccountId()
+{
+    if (!_accountId)
+        _accountId = GetOrCreateAccount(PartyAccountName);
     return _accountId;
 }
 
-static WorldSession* CreateBotSession(uint32 accountId)
+static uint32 GetWorldAccountId()
+{
+    static uint32 id = 0;
+    if (!id)
+        id = GetOrCreateAccount(WorldAccountName);
+    return id;
+}
+
+static WorldSession* CreateBotSession(uint32 accountId, char const* accountName)
 {
     uint32 build = 0;
     if (std::shared_ptr<Realm const> realm = sRealmList->GetCurrentRealm())
         build = realm->Build;
 
-    WorldSession* session = new WorldSession(accountId, BotAccountName, 0, "", nullptr, SEC_PLAYER,
+    WorldSession* session = new WorldSession(accountId, accountName, 0, "", nullptr, SEC_PLAYER,
         uint8(sWorld->getIntConfig(CONFIG_EXPANSION)), 0, "", Minutes(0), build, ClientBuild::VariantId{}, LOCALE_enUS, 0, false);
     session->SetBotSession(true);
     return session;
@@ -88,10 +120,13 @@ static WorldSession* CreateBotSession(uint32 accountId)
 
 static std::string GenerateBotName()
 {
-    for (int attempt = 0; attempt < 50; ++attempt)
+    for (int attempt = 0; attempt < 100; ++attempt)
     {
         std::string name = std::string(Trinity::Containers::SelectRandomContainerElement(NameStarts))
+            + Trinity::Containers::SelectRandomContainerElement(NameMiddles)
             + Trinity::Containers::SelectRandomContainerElement(NameEnds);
+        if (name.size() > 12)
+            continue;
         if (ObjectMgr::CheckPlayerName(name, LOCALE_enUS, true) != CHAR_NAME_SUCCESS)
             continue;
         if (sCharacterCache->GetCharacterCacheByName(name) || sObjectMgr->IsReservedName(name))
@@ -99,6 +134,99 @@ static std::string GenerateBotName()
         return name;
     }
     return {};
+}
+
+// WorldSession::MeetsChrCustomizationReq without anything earned (achievement, appearance, quest): what any new
+// character of that race and class may pick
+static bool IsFreeCustomizationReq(int32 reqId, uint8 race, uint8 classId)
+{
+    ChrCustomizationReqEntry const* req = sChrCustomizationReqStore.LookupEntry(reqId);
+    if (!req || !req->GetFlags().HasFlag(ChrCustomizationReqFlag::HasRequirements))
+        return true;
+    if (req->ClassMask && !(req->ClassMask & (1 << (classId - 1))))
+        return false;
+    if (!req->RaceMask.IsEmpty() && req->RaceMask != RACEMASK_ALL_v<int32, 2> && !req->RaceMask.HasRace(race))
+        return false;
+    return !req->AchievementID && !req->ItemModifiedAppearanceID && !req->QuestID;
+}
+
+// A random but valid look: one choice for every option of that race and sex. Without any, the client asserts
+// "Invalid Option ID 0" and can't build the character's model.
+static void RandomCustomizations(uint8 race, uint8 classId, uint8 sex, std::vector<std::pair<uint32, uint32>>& out)
+{
+    std::vector<ChrCustomizationOptionEntry const*> const* options = sDB2Manager.GetCustomiztionOptions(race, sex);
+    if (!options)
+        return;
+
+    for (ChrCustomizationOptionEntry const* option : *options)
+    {
+        if (!IsFreeCustomizationReq(option->ChrCustomizationReqID, race, classId))
+            continue;
+        std::vector<ChrCustomizationChoiceEntry const*> const* choices = sDB2Manager.GetCustomiztionChoices(option->ID);
+        if (!choices || choices->empty())
+            continue;
+
+        std::vector<ChrCustomizationChoiceEntry const*> free;
+        for (ChrCustomizationChoiceEntry const* choice : *choices)
+            if (IsFreeCustomizationReq(choice->ChrCustomizationReqID, race, classId))
+                free.push_back(choice);
+        if (free.empty())
+            continue;
+
+        out.emplace_back(option->ID, Trinity::Containers::SelectRandomContainerElement(free)->ID);
+    }
+}
+
+ObjectGuid ForeverBotMgr::CreateCharacter(uint8 race, uint8 classId, uint32 accountId, WorldSession* session, std::string& error,
+    CharacterDatabaseTransaction& pendingCommit)
+{
+    std::string name = GenerateBotName();
+    if (name.empty())
+    {
+        error = "Could not find a free bot name.";
+        return ObjectGuid::Empty;
+    }
+
+    WorldPackets::Character::CharacterCreateInfo createInfo;
+    createInfo.Race = race;
+    createInfo.Class = classId;
+    createInfo.Sex = uint8(urand(0, 1));
+    createInfo.Name = name;
+
+    std::vector<std::pair<uint32, uint32>> customizations;
+    RandomCustomizations(race, classId, createInfo.Sex, customizations);
+    for (auto const& [optionId, choiceId] : customizations)
+    {
+        WorldPackets::Character::ChrCustomizationChoice& choice = createInfo.Customizations.emplace_back();
+        choice.ChrCustomizationOptionID = optionId;
+        choice.ChrCustomizationChoiceID = choiceId;
+    }
+
+    Player* newChar = new Player(session);
+    newChar->GetMotionMaster()->Initialize();
+    if (!newChar->Create(sObjectMgr->GetGenerator<HighGuid::Player>().Generate(), &createInfo))
+    {
+        newChar->CleanupsBeforeDelete();
+        delete newChar;
+        error = "The bot character could not be created.";
+        return ObjectGuid::Empty;
+    }
+
+    // the character statements are prepared on the async connections only (a synchronous commit asserts on m_mStmt):
+    // the caller commits pendingCommit asynchronously and logs the bot in once it is done
+    LoginDatabaseTransaction loginTransaction = LoginDatabase.BeginTransaction();
+    pendingCommit = CharacterDatabase.BeginTransaction();
+    newChar->SaveToDB(loginTransaction, pendingCommit, true);
+    LoginDatabase.CommitTransaction(loginTransaction);
+
+    ObjectGuid guid = newChar->GetGUID();
+    sCharacterCache->AddCharacterCacheEntry(guid, accountId, name, createInfo.Sex, race, classId, newChar->GetLevel(), false);
+
+    newChar->CleanupsBeforeDelete();
+    delete newChar;
+
+    TC_LOG_INFO("misc", "ForeverBots: created bot character {} ({}) race {} class {}", name, guid.ToString(), race, classId);
+    return guid;
 }
 
 ObjectGuid ForeverBotMgr::FindOrCreateCharacter(Player* owner, uint8 classId, uint32 accountId, WorldSession* session, std::string& error,
@@ -132,55 +260,69 @@ ObjectGuid ForeverBotMgr::FindOrCreateCharacter(Player* owner, uint8 classId, ui
         } while (result->NextRow());
     }
 
-    // create a new one
-    std::string name = GenerateBotName();
-    if (name.empty())
-    {
-        error = "Could not find a free bot name.";
-        return ObjectGuid::Empty;
-    }
+    return CreateCharacter(Trinity::Containers::SelectRandomContainerElement(races), classId, accountId, session, error, pendingCommit);
+}
 
-    WorldPackets::Character::CharacterCreateInfo createInfo;
-    createInfo.Race = Trinity::Containers::SelectRandomContainerElement(races);
-    createInfo.Class = classId;
-    createInfo.Sex = uint8(urand(0, 1));
-    createInfo.Name = name;
+void ForeverBotMgr::EnsureCustomizations(ObjectGuid guid)
+{
+    // bots created before the appearance fix have none (async like the position update: the login query runs after them,
+    // and after the save of a bot that just logged out - the character database has a single async worker)
+    if (QueryResult count = CharacterDatabase.Query(Trinity::StringFormat("SELECT COUNT(*) FROM character_customizations WHERE guid = {}", guid.GetCounter()).c_str()))
+        if ((*count)[0].GetUInt64() > 0)
+            return;
 
-    Player* newChar = new Player(session);
-    newChar->GetMotionMaster()->Initialize();
-    if (!newChar->Create(sObjectMgr->GetGenerator<HighGuid::Player>().Generate(), &createInfo))
-    {
-        newChar->CleanupsBeforeDelete();
-        delete newChar;
-        error = "The bot character could not be created.";
-        return ObjectGuid::Empty;
-    }
+    QueryResult info = CharacterDatabase.Query(Trinity::StringFormat("SELECT race, gender, class FROM characters WHERE guid = {}", guid.GetCounter()).c_str());
+    if (!info)
+        return;
 
-    // the character statements are prepared on the async connections only (a synchronous commit asserts on m_mStmt):
-    // the caller commits pendingCommit asynchronously and logs the bot in once it is done
-    LoginDatabaseTransaction loginTransaction = LoginDatabase.BeginTransaction();
-    pendingCommit = CharacterDatabase.BeginTransaction();
-    newChar->SaveToDB(loginTransaction, pendingCommit, true);
-    LoginDatabase.CommitTransaction(loginTransaction);
+    std::vector<std::pair<uint32, uint32>> customizations;
+    RandomCustomizations((*info)[0].GetUInt8(), (*info)[2].GetUInt8(), (*info)[1].GetUInt8(), customizations);
+    for (auto const& [optionId, choiceId] : customizations)
+        CharacterDatabase.Execute(Trinity::StringFormat("INSERT INTO character_customizations (guid, chrCustomizationOptionID, chrCustomizationChoiceID) VALUES ({}, {}, {})",
+            guid.GetCounter(), optionId, choiceId).c_str());
+}
 
-    ObjectGuid guid = newChar->GetGUID();
-    sCharacterCache->AddCharacterCacheEntry(guid, accountId, name, createInfo.Sex, createInfo.Race, classId, newChar->GetLevel(), false);
-
-    newChar->CleanupsBeforeDelete();
-    delete newChar;
-
-    TC_LOG_INFO("misc", "ForeverBots: created bot character {} ({}) race {} class {}", name, guid.ToString(), createInfo.Race, classId);
-    return guid;
+void ForeverBotMgr::PlaceCharacterAt(ObjectGuid guid, uint32 mapId, Position const& pos)
+{
+    CharacterDatabase.Execute(Trinity::StringFormat(
+        "UPDATE characters SET map = {}, instance_id = 0, position_x = {}, position_y = {}, position_z = {}, orientation = {} WHERE guid = {}",
+        mapId, pos.GetPositionX(), pos.GetPositionY(), pos.GetPositionZ(), pos.GetOrientation(), guid.GetCounter()).c_str());
 }
 
 void ForeverBotMgr::PlaceCharacterAt(ObjectGuid guid, Player* owner)
 {
     // the bot logs in where the owner is (no teleport needed, works across maps and instances)
     Position pos = owner->GetNearPosition(2.0f, float(M_PI));
-    CharacterDatabase.DirectExecute(Trinity::StringFormat(
+    CharacterDatabase.Execute(Trinity::StringFormat(
         "UPDATE characters SET map = {}, instance_id = {}, zone = {}, position_x = {}, position_y = {}, position_z = {}, orientation = {} WHERE guid = {}",
         owner->GetMapId(), owner->GetInstanceId(), owner->GetZoneId(), pos.GetPositionX(), pos.GetPositionY(), owner->GetPositionZ(), owner->GetOrientation(),
         guid.GetCounter()).c_str());
+}
+
+void ForeverBotMgr::LoginWhenSaved(ForeverBot& bot, CharacterDatabaseTransaction& pendingCommit, bool world)
+{
+    // new character: log in once it is saved (the callback runs from the session update, see Update)
+    bot.Creating = true;
+    bot.Session->AddTransactionCallback(CharacterDatabase.AsyncCommitTransaction(pendingCommit)).AfterComplete([this, guid = bot.Guid, world](bool success)
+    {
+        ForeverBot* created = GetBot(guid);
+        if (!created)
+            return;
+
+        created->Creating = false;
+        if (!success)
+        {
+            created->CreateFailed = true;
+            return;
+        }
+
+        if (world)
+            StartWorldLogin(*created);
+        else if (Player* owner = ObjectAccessor::FindConnectedPlayer(created->Owner))
+            StartLogin(*created, owner);
+        else
+            created->CreateFailed = true;
+    });
 }
 
 std::string ForeverBotMgr::AddBot(Player* owner, uint8 classId, BotRole role)
@@ -197,7 +339,7 @@ std::string ForeverBotMgr::AddBot(Player* owner, uint8 classId, BotRole role)
     if (!accountId)
         return "Could not create the bot account.";
 
-    WorldSession* session = CreateBotSession(accountId);
+    WorldSession* session = CreateBotSession(accountId, PartyAccountName);
     std::string error;
     CharacterDatabaseTransaction pendingCommit;
     ObjectGuid guid = FindOrCreateCharacter(owner, classId, accountId, session, error, pendingCommit);
@@ -228,31 +370,26 @@ std::string ForeverBotMgr::AddBot(Player* owner, uint8 classId, BotRole role)
     bot.Role = role;
     bot.Index = index;
 
-    if (!pendingCommit)
-    {
+    if (pendingCommit)
+        LoginWhenSaved(bot, pendingCommit, false);
+    else
         StartLogin(bot, owner);
-        return {};
-    }
-
-    // new character: log in once it is saved (the callback runs from the session update, see Update)
-    bot.Creating = true;
-    session->AddTransactionCallback(CharacterDatabase.AsyncCommitTransaction(pendingCommit)).AfterComplete([this, guid](bool success)
-    {
-        ForeverBot* created = GetBot(guid);
-        if (!created)
-            return;
-
-        created->Creating = false;
-        Player* owner = ObjectAccessor::FindConnectedPlayer(created->Owner);
-        if (!success || !owner)
-        {
-            created->CreateFailed = true;
-            return;
-        }
-
-        StartLogin(*created, owner);
-    });
     return {};
+}
+
+void ForeverBotMgr::StartLogin(ForeverBot& bot, Player* owner)
+{
+    EnsureCustomizations(bot.Guid);
+    PlaceCharacterAt(bot.Guid, owner);
+    bot.Session->SetBotBeforeAddToMap([this, guid = bot.Guid](Player* botPlayer) { PrepareBeforeWorld(guid, botPlayer); });
+    bot.Session->LoginBotCharacter(bot.Guid);
+}
+
+void ForeverBotMgr::StartWorldLogin(ForeverBot& bot)
+{
+    EnsureCustomizations(bot.Guid);
+    bot.Session->SetBotBeforeAddToMap([this, guid = bot.Guid](Player* botPlayer) { PrepareBeforeWorld(guid, botPlayer); });
+    bot.Session->LoginBotCharacter(bot.Guid);
 }
 
 void ForeverBotMgr::LearnClassSpells(Player* bot)
@@ -275,30 +412,358 @@ void ForeverBotMgr::LearnClassSpells(Player* bot)
     }
 }
 
-void ForeverBotMgr::StartLogin(ForeverBot& bot, Player* owner)
+// ---------------------------------------------------------------------------------------------------------------------
+// Gear: the best item the bot can use for each slot, up to a few levels above its own, from vanilla items only
+// ---------------------------------------------------------------------------------------------------------------------
+namespace
 {
-    PlaceCharacterAt(bot.Guid, owner);
-    bot.Session->SetBotBeforeAddToMap([this, guid = bot.Guid](Player* botPlayer) { PrepareBeforeWorld(guid, botPlayer); });
-    bot.Session->LoginBotCharacter(bot.Guid);
+    struct GearPlan
+    {
+        bool TwoHand = false;       // 2H weapon in the main hand
+        bool Shield = false;        // 1H + shield
+        bool DualWield = false;     // 1H + 1H
+        bool OffHandHoldable = false;
+        bool Ranged = false;        // bow / gun / crossbow / thrown in the ranged slot
+        bool Wand = false;
+        std::vector<int32> Stats;   // preferred stats, best first
+    };
+
+    GearPlan PlanFor(uint8 classId, BotRole role)
+    {
+        GearPlan plan;
+        switch (classId)
+        {
+            case CLASS_WARRIOR:
+                plan.Shield = role == BotRole::Tank; plan.TwoHand = role != BotRole::Tank; plan.Ranged = true;
+                plan.Stats = { MOD_STRENGTH, MOD_STAMINA, MOD_AGILITY };
+                break;
+            case CLASS_PALADIN:
+                plan.Shield = role != BotRole::Dps; plan.TwoHand = role == BotRole::Dps;
+                plan.Stats = role == BotRole::Heal ? std::vector<int32>{ MOD_INTELLECT, MOD_SPIRIT, MOD_STAMINA } : std::vector<int32>{ MOD_STRENGTH, MOD_STAMINA, MOD_INTELLECT };
+                break;
+            case CLASS_HUNTER:
+                plan.TwoHand = true; plan.Ranged = true;
+                plan.Stats = { MOD_AGILITY, MOD_STAMINA, MOD_INTELLECT };
+                break;
+            case CLASS_ROGUE:
+                plan.DualWield = true; plan.Ranged = true;
+                plan.Stats = { MOD_AGILITY, MOD_STAMINA, MOD_STRENGTH };
+                break;
+            case CLASS_PRIEST:
+            case CLASS_MAGE:
+            case CLASS_WARLOCK:
+                plan.TwoHand = true; plan.Wand = true;
+                plan.Stats = { MOD_INTELLECT, MOD_SPIRIT, MOD_STAMINA };
+                break;
+            case CLASS_SHAMAN:
+                plan.Shield = true;
+                plan.Stats = role == BotRole::Heal ? std::vector<int32>{ MOD_INTELLECT, MOD_SPIRIT, MOD_STAMINA } : std::vector<int32>{ MOD_INTELLECT, MOD_STRENGTH, MOD_STAMINA };
+                break;
+            case CLASS_DRUID:
+                plan.TwoHand = true;
+                plan.Stats = role == BotRole::Tank ? std::vector<int32>{ MOD_AGILITY, MOD_STAMINA, MOD_STRENGTH } : std::vector<int32>{ MOD_INTELLECT, MOD_SPIRIT, MOD_STAMINA };
+                break;
+            default:
+                plan.TwoHand = true;
+                break;
+        }
+        return plan;
+    }
+
+    bool IsPrimaryStat(int32 stat) { return stat == MOD_AGILITY || stat == MOD_STRENGTH || stat == MOD_INTELLECT || stat == MOD_SPIRIT; }
+
+    int32 ScoreItem(ItemTemplate const& proto, GearPlan const& plan)
+    {
+        int32 score = int32(proto.GetBaseItemLevel()) * 10 + int32(proto.GetQuality()) * 4;
+        for (uint32 i = 0; i < MAX_ITEM_PROTO_STATS; ++i)
+        {
+            int32 stat = proto.GetStatModifierBonusStat(i);
+            if (stat < 0)
+                continue;
+            auto itr = std::ranges::find(plan.Stats, stat);
+            if (itr != plan.Stats.end())
+                score += 12 - int32(std::distance(plan.Stats.begin(), itr)) * 3;
+            else if (IsPrimaryStat(stat))
+                score -= 10;                       // e.g. intellect on a warrior
+        }
+        // heavier armor is better for whoever can wear it (cloaks are always cloth)
+        if (proto.GetClass() == ITEM_CLASS_ARMOR && proto.GetInventoryType() != INVTYPE_CLOAK)
+            score += int32(proto.GetSubClass()) * 6;
+        return score;
+    }
+}
+
+void ForeverBotMgr::AutoGear(Player* bot, BotRole role)
+{
+    GearPlan const plan = PlanFor(bot->GetClass(), role);
+    uint8 const level = bot->GetLevel();
+
+    std::unordered_map<uint8, std::vector<std::pair<int32, uint32>>> candidates;   // equipment slot -> (score, item)
+    auto consider = [&](uint8 slot, ItemTemplate const& proto) { candidates[slot].emplace_back(ScoreItem(proto, plan), proto.GetId()); };
+
+    for (auto const& [itemId, proto] : sObjectMgr->GetItemTemplateStore())
+    {
+        if (itemId >= MaxVanillaItemId)
+            continue;
+        if (proto.GetQuality() < ITEM_QUALITY_NORMAL || proto.GetQuality() > ITEM_QUALITY_RARE)
+            continue;
+        if (proto.GetClass() != ITEM_CLASS_WEAPON && proto.GetClass() != ITEM_CLASS_ARMOR)
+            continue;
+        if (proto.GetBaseItemLevel() > uint32(level) + 5u)
+            continue;
+        char const* name = proto.GetDefaultLocaleName();
+        if (!name || !*name || strstr(name, "Monster") || strstr(name, "Deprecated") || strstr(name, "OLD") || strstr(name, "[PH]") || strstr(name, "Test"))
+            continue;
+        if (bot->CanUseItem(&proto) != EQUIP_ERR_OK)
+            continue;
+
+        uint32 const subClass = proto.GetSubClass();
+        switch (proto.GetInventoryType())
+        {
+            case INVTYPE_HEAD:      consider(EQUIPMENT_SLOT_HEAD, proto); break;
+            case INVTYPE_NECK:      consider(EQUIPMENT_SLOT_NECK, proto); break;
+            case INVTYPE_SHOULDERS: consider(EQUIPMENT_SLOT_SHOULDERS, proto); break;
+            case INVTYPE_CHEST:
+            case INVTYPE_ROBE:      consider(EQUIPMENT_SLOT_CHEST, proto); break;
+            case INVTYPE_WAIST:     consider(EQUIPMENT_SLOT_WAIST, proto); break;
+            case INVTYPE_LEGS:      consider(EQUIPMENT_SLOT_LEGS, proto); break;
+            case INVTYPE_FEET:      consider(EQUIPMENT_SLOT_FEET, proto); break;
+            case INVTYPE_WRISTS:    consider(EQUIPMENT_SLOT_WRISTS, proto); break;
+            case INVTYPE_HANDS:     consider(EQUIPMENT_SLOT_HANDS, proto); break;
+            case INVTYPE_FINGER:    consider(EQUIPMENT_SLOT_FINGER1, proto); break;
+            case INVTYPE_CLOAK:     consider(EQUIPMENT_SLOT_BACK, proto); break;
+            case INVTYPE_2HWEAPON:
+                if (plan.TwoHand)
+                    consider(EQUIPMENT_SLOT_MAINHAND, proto);
+                break;
+            case INVTYPE_WEAPON:
+            case INVTYPE_WEAPONMAINHAND:
+                if (!plan.TwoHand)
+                    consider(EQUIPMENT_SLOT_MAINHAND, proto);
+                if (plan.DualWield && proto.GetInventoryType() == INVTYPE_WEAPON)
+                    consider(EQUIPMENT_SLOT_OFFHAND, proto);
+                break;
+            case INVTYPE_WEAPONOFFHAND:
+                if (plan.DualWield)
+                    consider(EQUIPMENT_SLOT_OFFHAND, proto);
+                break;
+            case INVTYPE_SHIELD:
+                if (plan.Shield)
+                    consider(EQUIPMENT_SLOT_OFFHAND, proto);
+                break;
+            case INVTYPE_HOLDABLE:
+                if (plan.OffHandHoldable)
+                    consider(EQUIPMENT_SLOT_OFFHAND, proto);
+                break;
+            case INVTYPE_RANGED:
+            case INVTYPE_THROWN:
+                if (plan.Ranged)
+                    consider(EQUIPMENT_SLOT_RANGED, proto);
+                break;
+            case INVTYPE_RANGEDRIGHT:
+                if ((plan.Wand && subClass == ITEM_SUBCLASS_WEAPON_WAND) || (plan.Ranged && subClass != ITEM_SUBCLASS_WEAPON_WAND))
+                    consider(EQUIPMENT_SLOT_RANGED, proto);
+                break;
+            default:
+                break;
+        }
+    }
+
+    // replace whatever is equipped (starting gear) with the best picks; second ring is the second best ring
+    for (auto& [slot, list] : candidates)
+        std::ranges::sort(list, std::greater<>());
+
+    std::vector<std::pair<uint8, uint32>> picks;
+    for (auto const& [slot, list] : candidates)
+    {
+        if (list.empty())
+            continue;
+        picks.emplace_back(slot, list[0].second);
+        if (slot == EQUIPMENT_SLOT_FINGER1 && list.size() > 1)
+            picks.emplace_back(EQUIPMENT_SLOT_FINGER2, list[1].second);
+    }
+    if (plan.DualWield)
+    {
+        // main hand and off hand picked from the same list could be the same unique item: take the next one then
+        auto mh = std::ranges::find(picks, uint8(EQUIPMENT_SLOT_MAINHAND), &std::pair<uint8, uint32>::first);
+        auto oh = std::ranges::find(picks, uint8(EQUIPMENT_SLOT_OFFHAND), &std::pair<uint8, uint32>::first);
+        if (mh != picks.end() && oh != picks.end() && mh->second == oh->second && candidates[EQUIPMENT_SLOT_OFFHAND].size() > 1)
+            oh->second = candidates[EQUIPMENT_SLOT_OFFHAND][1].second;
+    }
+
+    for (uint8 slot = EQUIPMENT_SLOT_START; slot < EQUIPMENT_SLOT_END; ++slot)
+        if (slot != EQUIPMENT_SLOT_BODY && slot != EQUIPMENT_SLOT_TABARD && slot != EQUIPMENT_SLOT_TRINKET1 && slot != EQUIPMENT_SLOT_TRINKET2)
+            if (bot->GetItemByPos(INVENTORY_SLOT_BAG_0, slot))
+                bot->DestroyItem(INVENTORY_SLOT_BAG_0, slot, true);
+
+    // main hand first (a two-hander decides whether the off hand is free)
+    std::ranges::sort(picks, [](auto const& a, auto const& b) { return (a.first == EQUIPMENT_SLOT_MAINHAND) > (b.first == EQUIPMENT_SLOT_MAINHAND); });
+    for (auto const& [slot, itemId] : picks)
+    {
+        uint16 dest = 0;
+        if (bot->CanEquipNewItem(slot, dest, itemId, false) == EQUIP_ERR_OK)
+            bot->EquipNewItem(dest, itemId, ItemContext::NONE, true);
+    }
+}
+
+// ---------------------------------------------------------------------------------------------------------------------
+// Talents: Classic 1.60 talents are a trait config (no starter builds in its data). Points go one by one into the
+// lowest row the trait validator accepts, the tab that fits the bot's role first.
+// ---------------------------------------------------------------------------------------------------------------------
+namespace
+{
+    // classic tab order (left to right): which tab a class/role wants
+    uint8 PreferredTab(uint8 classId, BotRole role)
+    {
+        switch (classId)
+        {
+            case CLASS_WARRIOR: return role == BotRole::Tank ? 2 : 1;                          // protection / fury
+            case CLASS_PALADIN: return role == BotRole::Heal ? 0 : role == BotRole::Tank ? 1 : 2;
+            case CLASS_HUNTER:  return 0;                                                       // beast mastery
+            case CLASS_ROGUE:   return 1;                                                       // combat
+            case CLASS_PRIEST:  return role == BotRole::Heal ? 1 : 2;                          // holy / shadow
+            case CLASS_SHAMAN:  return role == BotRole::Heal ? 2 : 0;                          // restoration / elemental
+            case CLASS_MAGE:    return 2;                                                       // frost
+            case CLASS_WARLOCK: return 0;                                                       // affliction
+            case CLASS_DRUID:   return role == BotRole::Heal ? 2 : role == BotRole::Tank ? 1 : 0;
+            default:            return 0;
+        }
+    }
+}
+
+void ForeverBotMgr::SpendTalents(Player* bot, BotRole role)
+{
+    if (bot->GetLevel() < 10)
+        return;
+
+    UF::TraitConfig const* active = bot->GetTraitConfig(bot->m_activePlayerData->ActiveCombatTraitConfigID);
+    if (!active)
+        return;
+
+    WorldPackets::Traits::TraitConfig config(*active);
+
+    // the class talent trees: those of the skill lines the bot has
+    std::set<int32> trees;
+    for (SkillLineXTraitTreeEntry const* link : sSkillLineXTraitTreeStore)
+        if (bot->HasSkill(link->SkillLineID))
+            trees.insert(link->TraitTreeID);
+    if (trees.empty())
+        return;
+
+    struct Candidate { TraitNodeEntry const* Node; int32 EntryId; int32 MaxRanks; int32 Tab; };
+    std::vector<Candidate> candidates;
+    for (TraitNodeEntry const* node : sTraitNodeStore)
+    {
+        if (!trees.contains(int32(node->TraitTreeID)))
+            continue;
+        TraitNodeXTraitNodeEntryEntry const* first = nullptr;
+        for (TraitNodeXTraitNodeEntryEntry const* link : sTraitNodeXTraitNodeEntryStore)
+            if (link->TraitNodeID == node->ID && (!first || link->Index < first->Index))
+                first = link;
+        if (!first)
+            continue;
+        TraitNodeEntryEntry const* entry = sTraitNodeEntryStore.LookupEntry(first->TraitNodeEntryID);
+        if (!entry || entry->MaxRanks <= 0)
+            continue;
+        candidates.push_back({ node, first->TraitNodeEntryID, entry->MaxRanks, 0 });
+    }
+    if (candidates.empty())
+        return;
+
+    // three tabs: by sub tree when the data has them, otherwise by horizontal position
+    std::map<int32, int32> tabKeys;     // key -> min PosX
+    bool const bySubTree = std::ranges::any_of(candidates, [](Candidate const& c) { return c.Node->TraitSubTreeID != 0; });
+    auto [minX, maxX] = std::ranges::minmax(candidates | std::views::transform([](Candidate const& c) { return c.Node->PosX; }));
+    int32 const width = std::max(1, (maxX - minX + 1) / 3);
+    for (Candidate& c : candidates)
+    {
+        int32 key = bySubTree ? c.Node->TraitSubTreeID : std::min(2, (c.Node->PosX - minX) / width);
+        auto [itr, inserted] = tabKeys.try_emplace(key, c.Node->PosX);
+        if (!inserted)
+            itr->second = std::min(itr->second, c.Node->PosX);
+        c.Tab = key;
+    }
+    std::vector<std::pair<int32, int32>> orderedTabs(tabKeys.begin(), tabKeys.end());   // (key, min x)
+    std::ranges::sort(orderedTabs, {}, &std::pair<int32, int32>::second);
+    uint8 const wanted = std::min<uint8>(PreferredTab(bot->GetClass(), role), uint8(orderedTabs.size() - 1));
+    int32 const wantedKey = orderedTabs[wanted].first;
+
+    std::ranges::sort(candidates, [&](Candidate const& a, Candidate const& b)
+    {
+        if ((a.Tab == wantedKey) != (b.Tab == wantedKey))
+            return a.Tab == wantedKey;
+        if (a.Node->PosY != b.Node->PosY)
+            return a.Node->PosY < b.Node->PosY;
+        return a.Node->PosX < b.Node->PosX;
+    });
+
+    bool changed = false;
+    for (int32 points = 0; points < 70; ++points)
+    {
+        bool spent = false;
+        for (Candidate const& c : candidates)
+        {
+            WorldPackets::Traits::TraitConfig attempt = config;
+            auto itr = std::ranges::find_if(attempt.Entries, [&](WorldPackets::Traits::TraitEntry const& e) { return e.TraitNodeID == int32(c.Node->ID); });
+            if (itr != attempt.Entries.end())
+            {
+                if (itr->TraitNodeEntryID != c.EntryId || itr->Rank + itr->GrantedRanks >= c.MaxRanks)
+                    continue;
+                ++itr->Rank;
+            }
+            else
+            {
+                WorldPackets::Traits::TraitEntry& added = attempt.Entries.emplace_back();
+                added.TraitNodeID = c.Node->ID;
+                added.TraitNodeEntryID = c.EntryId;
+                added.Rank = 1;
+            }
+
+            if (TraitMgr::ValidateConfig(attempt, bot) == TraitMgr::LearnResult::Ok)
+            {
+                config = std::move(attempt);
+                spent = changed = true;
+                break;
+            }
+        }
+        if (!spent)
+            break;
+    }
+
+    if (changed)
+        bot->UpdateTraitConfig(std::move(config), 0, false);
 }
 
 // Runs inside the bot's login, after it is loaded and before it is added to the map: nobody sees it yet, so the
-// level, the spells and the group membership reach the other players in the create object. Joining a group while
-// visible sends a full party member values update, which crashes the 1.60 client.
+// level, the spells, the gear and the group membership reach the other players in the create object. Joining a
+// group while visible sends a full party member values update, which crashes the 1.60 client.
 void ForeverBotMgr::PrepareBeforeWorld(ObjectGuid guid, Player* botPlayer)
 {
     ForeverBot* bot = GetBot(guid);
-    Player* owner = bot ? ObjectAccessor::FindConnectedPlayer(bot->Owner) : nullptr;
-    if (!owner)
+    if (!bot)
         return;
 
-    if (botPlayer->GetLevel() != owner->GetLevel())
-        botPlayer->GiveLevel(owner->GetLevel());
+    // a player sees nothing (Player::CanNeverSee) until its client reports the end of loading
+    // (CMSG_MOVE_INIT_ACTIVE_MOVER_COMPLETE / time sync): without this flag a bot can't find or even fight back
+    botPlayer->SetPlayerLocalFlag(PLAYER_LOCAL_FLAG_OVERRIDE_TRANSPORT_SERVER_TIME);
+    botPlayer->SetTransportServerTime(0);
+
+    Player* owner = bot->IsWorldBot() ? nullptr : ObjectAccessor::FindConnectedPlayer(bot->Owner);
+    uint8 const targetLevel = owner ? owner->GetLevel() : (bot->WorldLevel ? bot->WorldLevel : botPlayer->GetLevel());
+    bot->WorldLevel = 0;
+
+    if (botPlayer->GetLevel() != targetLevel)
+        botPlayer->GiveLevel(targetLevel);
     LearnClassSpells(botPlayer);
+    SpendTalents(botPlayer, bot->Role);
+    AutoGear(botPlayer, bot->Role);
     if (botPlayer->isDead())
         botPlayer->ResurrectPlayer(1.0f);
     botPlayer->SetFullHealth();
     botPlayer->SetFullPower(botPlayer->GetPowerType());
+
+    if (!owner)
+        return;
 
     Group* group = owner->GetGroup();
     if (!group)
@@ -328,9 +793,15 @@ void ForeverBotMgr::InitializeInWorld(ForeverBot& bot, Player* botPlayer, Player
     if (!botPlayer->AI())
         botPlayer->SetBotAI(new ForeverBotAI(botPlayer));
 
+    if (bot.IsWorldBot())
+        bot.Home = botPlayer->GetPosition();
+    bot.LoginLevel = botPlayer->GetLevel();
+
+    bool const announce = !bot.Relogging;
     bot.Ready = true;
     bot.Relogging = false;
-    ChatHandler(owner->GetSession()).PSendSysMessage("ForeverBots: {} joins as {}.", botPlayer->GetName(), BotRoleName(bot.Role));
+    if (owner && announce)
+        ChatHandler(owner->GetSession()).PSendSysMessage("ForeverBots: {} joins as {}.", botPlayer->GetName(), BotRoleName(bot.Role));
 }
 
 void ForeverBotMgr::Teleport(ForeverBot& bot, Player* botPlayer, Player* owner)
@@ -345,11 +816,37 @@ void ForeverBotMgr::Teleport(ForeverBot& bot, Player* botPlayer, Player* owner)
     bot.Session->FinishBotTeleport();
 }
 
+// Logs the bot out and back in: used for map changes and level ups, so every big change happens in
+// PrepareBeforeWorld while nobody sees the bot
+void ForeverBotMgr::Relog(ForeverBot& bot, Player* owner)
+{
+    Logout(bot);
+    bot.Session = CreateBotSession(bot.IsWorldBot() ? GetWorldAccountId() : GetBotAccountId(), bot.IsWorldBot() ? WorldAccountName : PartyAccountName);
+    bot.Relogging = true;
+    if (bot.IsWorldBot())
+        StartWorldLogin(bot);
+    else
+        StartLogin(bot, owner);
+}
+
 void ForeverBotMgr::Logout(ForeverBot& bot)
 {
     if (!bot.Session)
         return;
 
+    // a dead bot would be sent to a graveyard while logging out: just stand it back up
+    if (Player* botPlayer = bot.Session->GetPlayer())
+    {
+        if (botPlayer->isDead())
+        {
+            botPlayer->ResurrectPlayer(1.0f);
+            botPlayer->SpawnCorpseBones();
+        }
+        if (botPlayer->IsBeingTeleported())
+            bot.Session->FinishBotTeleport();
+    }
+
+    TC_LOG_DEBUG("misc", "ForeverBots: logging out {}", bot.Guid.ToString());
     bot.Session->LogoutPlayer(true);
     delete bot.Session;
     bot.Session = nullptr;
@@ -362,12 +859,16 @@ void ForeverBotMgr::RemoveBot(ObjectGuid guid)
     if (itr == _bots.end())
         return;
 
+    // leave the world first, then the group: the owner's client then never gets a party values update about a bot
+    // it can still see
+    Group* group = nullptr;
     if (itr->second.Session)
         if (Player* botPlayer = itr->second.Session->GetPlayer())
-            if (botPlayer->GetGroup())
-                botPlayer->RemoveFromGroup();
+            group = botPlayer->GetGroup();
 
     Logout(itr->second);
+    if (group && group->IsMember(guid))
+        group->RemoveMember(guid);
     _bots.erase(itr);
 }
 
@@ -382,15 +883,19 @@ void ForeverBotMgr::RemoveAll()
     std::vector<ObjectGuid> guids;
     for (auto const& [guid, bot] : _bots)
         guids.push_back(guid);
+    if (!guids.empty())
+        TC_LOG_INFO("misc", "ForeverBots: logging out {} bots", guids.size());
     for (ObjectGuid guid : guids)
         RemoveBot(guid);
+    if (!guids.empty())
+        TC_LOG_INFO("misc", "ForeverBots: all bots logged out");
 }
 
 std::vector<ForeverBot*> ForeverBotMgr::GetBotsOf(ObjectGuid owner)
 {
     std::vector<ForeverBot*> result;
     for (auto& [guid, bot] : _bots)
-        if (bot.Owner == owner)
+        if (!bot.IsWorldBot() && bot.Owner == owner)
             result.push_back(&bot);
     return result;
 }
@@ -401,87 +906,369 @@ ForeverBot* ForeverBotMgr::GetBot(ObjectGuid guid)
     return itr != _bots.end() ? &itr->second : nullptr;
 }
 
+std::vector<std::string> ForeverBotMgr::DescribeBots()
+{
+    std::vector<std::string> lines;
+    for (auto const& [guid, bot] : _bots)
+    {
+        Player* p = bot.Session ? bot.Session->GetPlayer() : nullptr;
+        if (!p || !p->IsInWorld())
+        {
+            lines.push_back(Trinity::StringFormat("{} {}: not in world (creating {}, loading {}, relogging {})", guid.ToString(), bot.IsWorldBot() ? "world" : "party",
+                bot.Creating, bot.Session && bot.Session->PlayerLoading(), bot.Relogging));
+            continue;
+        }
+        Unit* victim = p->GetVictim();
+        std::string attackers;
+        for (Unit* attacker : p->getAttackers())
+            attackers += Trinity::StringFormat(" [{} lvl {} valid {} dist {:.0f} see {} unattackable {} flags {:#x} immunePC {} meImmuneNPC {} uninteractible {} uber {}]",
+                attacker->GetName(), attacker->GetLevel(), p->IsValidAttackTarget(attacker), p->GetDistance(attacker), p->CanSeeOrDetect(attacker),
+                attacker->HasUnitState(UNIT_STATE_UNATTACKABLE), uint32(*attacker->m_unitData->Flags), attacker->IsImmuneToPC(), p->IsImmuneToNPC(),
+                attacker->IsUninteractible(), p->HasPlayerFlag(PLAYER_FLAGS_UBER));
+        std::string threats;
+        for (auto const& [threatGuid, ref] : p->GetCombatManager().GetPvECombatRefs())
+            if (Unit* other = ref->GetOther(p))
+                threats += Trinity::StringFormat(" [{} valid {} victim {}]", other->GetName(), p->IsValidAttackTarget(other), other->GetVictim() ? other->GetVictim()->GetName() : "-");
+        lines.push_back(Trinity::StringFormat("  attackers:{} combat refs:{}", attackers.empty() ? " none" : attackers, threats.empty() ? " none" : threats));
+        lines.push_back(Trinity::StringFormat("{} {} lvl {} xp {} {} map {} ({:.0f}, {:.0f}, {:.0f}) home dist {:.0f} | ai {} ready {} | {}{} victim {} | motion {} | hp {:.0f}% power {:.0f}%",
+            p->GetName(), bot.IsWorldBot() ? "world" : "party", p->GetLevel(), *p->m_activePlayerData->XP, p->IsAlive() ? "alive" : "dead",
+            p->GetMapId(), p->GetPositionX(), p->GetPositionY(), p->GetPositionZ(), bot.IsWorldBot() ? bot.Home.GetExactDist2d(p) : 0.0f,
+            p->AI() != nullptr, bot.Ready, p->IsInCombat() ? "combat " : "", p->isMoving() ? "moving" : "still",
+            victim ? victim->GetName() : "-", uint32(p->GetMotionMaster()->GetCurrentMovementGeneratorType()), p->GetHealthPct(),
+            p->GetPowerType() == POWER_MANA ? p->GetPowerPct(POWER_MANA) : 0.0f));
+    }
+    if (lines.empty())
+        lines.push_back("ForeverBots: no bots.");
+    return lines;
+}
+
+uint32 ForeverBotMgr::CountWorldBots() const
+{
+    uint32 count = 0;
+    for (auto const& [guid, bot] : _bots)
+        if (bot.IsWorldBot())
+            ++count;
+    return count;
+}
+
+void ForeverBotMgr::SetWorldBotCount(uint32 count)
+{
+    _worldTarget = std::min(count, MaxWorldBots);
+    _balanceTimer = 0;
+}
+
+// ---------------------------------------------------------------------------------------------------------------------
+// World bots
+// ---------------------------------------------------------------------------------------------------------------------
+void ForeverBotMgr::BuildWorldSpots()
+{
+    // hunting spots: where creatures with a vanilla level live on the two continents (not vendors / quest givers)
+    for (auto const& [spawnId, data] : sObjectMgr->GetAllCreatureData())
+    {
+        if (data.mapId != 0 && data.mapId != 1)
+            continue;
+        std::pair<uint8, uint8> const* level = sObjectMgr->GetCreatureClassicLevel(data.id);
+        if (!level || level->second > 60)
+            continue;
+        CreatureTemplate const* creatureTemplate = sObjectMgr->GetCreatureTemplate(data.id);
+        if (!creatureTemplate || creatureTemplate->npcflag || creatureTemplate->Classification != CreatureClassifications::Normal)
+            continue;
+        // monsters only: hostile to players or neutral to all (no guards / town folk of either faction)
+        FactionTemplateEntry const* faction = sFactionTemplateStore.LookupEntry(creatureTemplate->faction);
+        if (!faction || !(faction->IsHostileToPlayers() || faction->IsNeutralToAll()))
+            continue;
+
+        WorldSpot& spot = _worldSpots.emplace_back();
+        spot.MapId = uint16(data.mapId);
+        spot.MinLevel = level->first;
+        spot.MaxLevel = level->second;
+        spot.Pos = data.spawnPoint;
+    }
+    TC_LOG_INFO("misc", "ForeverBots: {} world bot hunting spots", _worldSpots.size());
+}
+
+bool ForeverBotMgr::PickWorldSpot(uint8 level, uint32& mapId, Position& pos)
+{
+    if (_worldSpots.empty())
+        BuildWorldSpots();
+
+    std::vector<WorldSpot const*> matching;
+    for (WorldSpot const& spot : _worldSpots)
+        if (spot.MinLevel <= level + 1 && spot.MaxLevel + 1 >= level)
+            matching.push_back(&spot);
+    if (matching.empty())
+        return false;
+
+    WorldSpot const* spot = Trinity::Containers::SelectRandomContainerElement(matching);
+    mapId = spot->MapId;
+    pos = spot->Pos;
+    pos.m_positionX += frand(-6.0f, 6.0f);
+    pos.m_positionY += frand(-6.0f, 6.0f);
+    return true;
+}
+
+void ForeverBotMgr::BalanceWorldBots()
+{
+    uint32 online = CountWorldBots();
+
+    // too many: log the newest out
+    while (online > _worldTarget)
+    {
+        ObjectGuid victim;
+        for (auto const& [guid, bot] : _bots)
+            if (bot.IsWorldBot())
+                victim = guid;
+        if (victim.IsEmpty())
+            break;
+        RemoveBot(victim);
+        --online;
+    }
+
+    if (online >= _worldTarget)
+        return;
+
+    uint32 accountId = GetWorldAccountId();
+    if (!accountId)
+        return;
+
+    uint32 logins = 0;
+
+    // first the world bots that already exist, each at a fresh hunting spot of its level
+    if (QueryResult result = CharacterDatabase.Query(Trinity::StringFormat("SELECT guid, class, level FROM characters WHERE account = {} AND deleteDate IS NULL ORDER BY RAND()", accountId).c_str()))
+    {
+        do
+        {
+            if (online >= _worldTarget || logins >= MaxLoginsPerBalance)
+                return;
+            ObjectGuid guid = ObjectGuid::Create<HighGuid::Player>((*result)[0].GetUInt64());
+            if (_bots.contains(guid))
+                continue;
+
+            uint8 classId = (*result)[1].GetUInt8();
+            uint32 spotMap = 0;
+            Position spot;
+            if (PickWorldSpot((*result)[2].GetUInt8(), spotMap, spot))
+                PlaceCharacterAt(guid, spotMap, spot);
+
+            ForeverBot& bot = _bots[guid];
+            bot.Guid = guid;
+            bot.World = true;
+            bot.Role = classId == CLASS_PRIEST ? BotRole::Heal : BotRole::Dps;
+            bot.Session = CreateBotSession(accountId, WorldAccountName);
+            StartWorldLogin(bot);
+            ++online;
+            ++logins;
+        } while (result->NextRow());
+    }
+
+    // then new ones, of a random class, faction and level, at a hunting spot of their level
+    while (online < _worldTarget && logins < MaxLoginsPerBalance)
+    {
+        uint8 classId = Trinity::Containers::SelectRandomContainerElement(BotClasses);
+        bool horde = urand(0, 1) == 1;
+        std::vector<uint8> races;
+        for (uint8 race : horde ? std::span<uint8 const>(HordeRaces) : std::span<uint8 const>(AllianceRaces))
+            if (sObjectMgr->GetPlayerInfo(race, classId))
+                races.push_back(race);
+        if (races.empty())
+            continue;
+
+        uint8 level = uint8(urand(1, 100) <= 60 ? urand(1, 30) : urand(31, 60));
+        uint32 mapId = 0;
+        Position pos;
+        if (!PickWorldSpot(level, mapId, pos))
+            return;
+
+        WorldSession* session = CreateBotSession(accountId, WorldAccountName);
+        std::string error;
+        CharacterDatabaseTransaction pendingCommit;
+        ObjectGuid guid = CreateCharacter(Trinity::Containers::SelectRandomContainerElement(races), classId, accountId, session, error, pendingCommit);
+        if (guid.IsEmpty())
+        {
+            delete session;
+            TC_LOG_ERROR("misc", "ForeverBots: world bot creation failed: {}", error);
+            return;
+        }
+
+        ForeverBot& bot = _bots[guid];
+        bot.Guid = guid;
+        bot.World = true;
+        bot.Role = classId == CLASS_PRIEST ? BotRole::Heal : BotRole::Dps;
+        bot.WorldLevel = level;
+        bot.Session = session;
+
+        // the new character is saved first; its position is set once the save is done, right before the login
+        bot.Creating = true;
+        session->AddTransactionCallback(CharacterDatabase.AsyncCommitTransaction(pendingCommit)).AfterComplete([this, guid, mapId, pos](bool success)
+        {
+            ForeverBot* created = GetBot(guid);
+            if (!created)
+                return;
+            created->Creating = false;
+            if (!success)
+            {
+                created->CreateFailed = true;
+                return;
+            }
+            PlaceCharacterAt(guid, mapId, pos);
+            StartWorldLogin(*created);
+        });
+
+        ++online;
+        ++logins;
+    }
+}
+
+void ForeverBotMgr::UpdateWorldBot(ForeverBot& bot, uint32 diff, std::vector<ObjectGuid>& /*toRemove*/)
+{
+    Player* botPlayer = bot.Session->GetPlayer();
+
+    if (botPlayer->isDead())
+    {
+        bot.DeadTimer += diff;
+        if (bot.DeadTimer >= WorldResurrectDelay)
+        {
+            botPlayer->ResurrectPlayer(0.7f);
+            botPlayer->SpawnCorpseBones();
+            bot.DeadTimer = 0;
+        }
+        return;
+    }
+    bot.DeadTimer = 0;
+
+    bot.RelogCheckTimer += diff;
+    if (bot.RelogCheckTimer < 10000)
+        return;
+    bot.RelogCheckTimer = 0;
+
+    if (botPlayer->IsInCombat())
+        return;
+
+    // it leveled up from its own kills: a relog teaches the new spells and finds better gear, out of sight;
+    // every few levels it also moves on to a hunting spot of its new level
+    if (botPlayer->GetLevel() > bot.LoginLevel)
+    {
+        uint8 const level = botPlayer->GetLevel();
+        if (level >= bot.LoginLevel + 3)
+        {
+            uint32 mapId = 0;
+            Position pos;
+            if (PickWorldSpot(level, mapId, pos))
+            {
+                Logout(bot);
+                PlaceCharacterAt(bot.Guid, mapId, pos);
+                bot.Session = CreateBotSession(GetWorldAccountId(), WorldAccountName);
+                bot.Relogging = true;
+                StartWorldLogin(bot);
+                return;
+            }
+        }
+        Relog(bot, nullptr);
+    }
+}
+
+void ForeverBotMgr::UpdatePartyBot(ForeverBot& bot, uint32 diff, std::vector<ObjectGuid>& toRemove)
+{
+    Player* owner = ObjectAccessor::FindConnectedPlayer(bot.Owner);
+    if (!owner)
+    {
+        toRemove.push_back(bot.Guid);
+        return;
+    }
+
+    Player* botPlayer = bot.Session->GetPlayer();
+    if (!owner->IsInWorld() || owner->IsBeingTeleported())
+        return;
+
+    // the owner went to another map or instance: log the bot out and back in at the owner's position
+    if (botPlayer->GetMapId() != owner->GetMapId() || botPlayer->GetInstanceId() != owner->GetInstanceId())
+    {
+        Relog(bot, owner);
+        return;
+    }
+
+    if (botPlayer->isDead())
+    {
+        bot.DeadTimer += diff;
+        if (bot.DeadTimer >= ResurrectDelay && owner->IsAlive() && !owner->IsInCombat())
+        {
+            botPlayer->ResurrectPlayer(0.5f);
+            botPlayer->SpawnCorpseBones();
+            Teleport(bot, botPlayer, owner);
+            bot.DeadTimer = 0;
+        }
+        return;
+    }
+    bot.DeadTimer = 0;
+
+    // the owner leveled up: catch up (level, spells, gear) through a relog, out of sight
+    if (botPlayer->GetLevel() < owner->GetLevel() && !botPlayer->IsInCombat() && !owner->IsInCombat())
+    {
+        Relog(bot, owner);
+        return;
+    }
+
+    if (bot.SummonRequested || (!botPlayer->IsInCombat() && !botPlayer->IsWithinDistInMap(owner, RegroupDistance)))
+    {
+        bot.SummonRequested = false;
+        Teleport(bot, botPlayer, owner);
+    }
+}
+
 void ForeverBotMgr::Update(uint32 diff)
 {
     std::vector<ObjectGuid> toRemove;
 
     for (auto& [guid, bot] : _bots)
     {
-        Player* owner = ObjectAccessor::FindConnectedPlayer(bot.Owner);
-        if (!owner)
-        {
-            toRemove.push_back(guid);
-            continue;
-        }
-
         if (!bot.Session)
         {
             toRemove.push_back(guid);
             continue;
         }
 
-        // the world pass of the session: runs the login query callback
+        // the world pass of the session: runs the save and login callbacks
         WorldSessionFilter filter(bot.Session);
         bot.Session->Update(diff, filter);
 
         Player* botPlayer = bot.Session->GetPlayer();
+
+        // nobody answers the teleport packets of a bot (graveyard, spells, near teleports...): finish them here
+        if (botPlayer && botPlayer->IsBeingTeleported())
+            bot.Session->FinishBotTeleport();
+
         if (!botPlayer || !botPlayer->IsInWorld())
         {
             if (bot.CreateFailed || (!bot.Creating && !bot.Session->PlayerLoading() && !botPlayer))
             {
                 TC_LOG_ERROR("misc", "ForeverBots: bot {} could not log in", guid.ToString());
-                ChatHandler(owner->GetSession()).SendSysMessage("ForeverBots: a bot could not log in.");
+                if (Player* owner = ObjectAccessor::FindConnectedPlayer(bot.Owner))
+                    ChatHandler(owner->GetSession()).SendSysMessage("ForeverBots: a bot could not log in.");
                 toRemove.push_back(guid);
             }
             continue;
         }
 
-        if (!owner->IsInWorld() || owner->IsBeingTeleported())
-            continue;
-
-        // the owner went to another map or instance: log the bot out and back in at the owner's position
-        if (botPlayer->GetMapId() != owner->GetMapId() || botPlayer->GetInstanceId() != owner->GetInstanceId())
-        {
-            Logout(bot);
-            bot.Session = CreateBotSession(GetBotAccountId());
-            bot.Relogging = true;
-            StartLogin(bot, owner);
-            continue;
-        }
-
         if (!bot.Ready)
         {
-            InitializeInWorld(bot, botPlayer, owner);
+            InitializeInWorld(bot, botPlayer, bot.IsWorldBot() ? nullptr : ObjectAccessor::FindConnectedPlayer(bot.Owner));
             continue;
         }
 
-        if (botPlayer->GetLevel() < owner->GetLevel())
-        {
-            botPlayer->GiveLevel(owner->GetLevel());
-            LearnClassSpells(botPlayer);
-        }
-
-        if (botPlayer->isDead())
-        {
-            bot.DeadTimer += diff;
-            if (bot.DeadTimer >= ResurrectDelay && owner->IsAlive() && !owner->IsInCombat())
-            {
-                botPlayer->ResurrectPlayer(0.5f);
-                botPlayer->SpawnCorpseBones();
-                Teleport(bot, botPlayer, owner);
-                bot.DeadTimer = 0;
-            }
-            continue;
-        }
-        bot.DeadTimer = 0;
-
-        if (bot.SummonRequested || (!botPlayer->IsInCombat() && !botPlayer->IsWithinDistInMap(owner, RegroupDistance)))
-        {
-            bot.SummonRequested = false;
-            Teleport(bot, botPlayer, owner);
-        }
+        if (bot.IsWorldBot())
+            UpdateWorldBot(bot, diff, toRemove);
+        else
+            UpdatePartyBot(bot, diff, toRemove);
     }
 
     for (ObjectGuid guid : toRemove)
         RemoveBot(guid);
+
+    _balanceTimer += diff;
+    if (_balanceTimer >= BalanceInterval)
+    {
+        _balanceTimer = 0;
+        if (_worldTarget || CountWorldBots())
+            BalanceWorldBots();
+    }
 }
