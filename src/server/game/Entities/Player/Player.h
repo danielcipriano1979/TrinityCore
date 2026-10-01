@@ -1240,6 +1240,7 @@ class TC_GAME_API Player final : public Unit, public GridObject<Player>
         ~Player();
 
         PlayerAI* AI() const { return reinterpret_cast<PlayerAI*>(GetAI()); }
+        void SetBotAI(PlayerAI* ai) { SetAI(reinterpret_cast<UnitAI*>(ai)); }   // Forever bots (scripts/Custom/ForeverBots)
 
         void CleanupsBeforeDelete(bool finalCleanup = true) override;
 

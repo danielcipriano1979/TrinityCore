@@ -468,6 +468,38 @@ void WorldSession::HandleMoveTeleportAck(WorldPackets::Movement::MoveTeleportAck
     GetPlayer()->ProcessDelayedOperations();
 }
 
+void WorldSession::FinishBotTeleport()
+{
+    Player* bot = GetPlayer();
+    if (!bot)
+        return;
+
+    switch (bot->GetTeleportState())
+    {
+        case TeleportState::WaitingForTeleportAck:          // same map: HandleMoveTeleportAck without a client
+        {
+            bot->SetTeleportState(TeleportState::NotTeleporting);
+            bot->UpdatePosition(bot->GetTeleportDest().Location, true);
+            bot->SetFallInformation(0, bot->GetPositionZ());
+            uint32 newzone, newarea;
+            bot->GetZoneAndAreaId(newzone, newarea);
+            bot->UpdateZone(newzone, newarea);
+            bot->ResummonPetTemporaryUnSummonedIfAny();
+            bot->ProcessDelayedOperations();
+            break;
+        }
+        case TeleportState::WaitingForSuspendTokenResponse: // other map: suspend token response + world port ack
+            bot->SetTeleportState(TeleportState::WaitingForWorldPortAck);
+            HandleMoveWorldportAck();
+            break;
+        case TeleportState::WaitingForWorldPortAck:
+            HandleMoveWorldportAck();
+            break;
+        default:
+            break;
+    }
+}
+
 void WorldSession::HandleMovementOpcodes(WorldPackets::Movement::ClientPlayerMovement& packet)
 {
     HandleMovementOpcode(packet.GetOpcode(), packet.Status);

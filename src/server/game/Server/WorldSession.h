@@ -1002,6 +1002,12 @@ class TC_GAME_API WorldSession
         ~WorldSession();
 
         bool PlayerLoading() const { return !m_playerLoading.IsEmpty(); }
+
+        // Forever bots: a session without any socket, driven by the server (see scripts/Custom/ForeverBots)
+        void SetBotSession(bool bot) { _isBotSession = bot; }
+        bool IsBotSession() const { return _isBotSession; }
+        void LoginBotCharacter(ObjectGuid guid);            // skips the client connect-to-instance step
+        void FinishBotTeleport();                           // what the client's teleport ack would do
         bool PlayerLogout() const { return m_playerLogout; }
         bool PlayerLogoutWithSave() const { return m_playerLogout && m_playerSave; }
         bool PlayerRecentlyLoggedOut() const { return m_playerRecentlyLogout; }
@@ -2080,6 +2086,7 @@ class TC_GAME_API WorldSession
         time_t _logoutTime;
         bool m_inQueue;                                     // session wait in auth.queue
         ObjectGuid m_playerLoading;                         // code processed in LoginPlayer
+        bool _isBotSession = false;
         bool m_playerLogout;                                // code processed in LogoutPlayer
         bool m_playerRecentlyLogout;
         bool m_playerSave;

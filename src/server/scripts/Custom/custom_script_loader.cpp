@@ -17,10 +17,12 @@
 
 // This is where scripts' loading functions should be declared:
 void AddClassicScripts();
+void AddSC_forever_bots();
 
 // The name of this function should match:
 // void Add${NameOfDirectory}Scripts()
 void AddCustomScripts()
 {
     AddClassicScripts();
+    AddSC_forever_bots();
 }

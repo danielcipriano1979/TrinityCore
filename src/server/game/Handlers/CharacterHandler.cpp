@@ -1335,6 +1335,15 @@ void WorldSession::HandleContinuePlayerLogin()
     });
 }
 
+void WorldSession::LoginBotCharacter(ObjectGuid guid)
+{
+    if (PlayerLoading() || GetPlayer())
+        return;
+
+    m_playerLoading = guid;
+    HandleContinuePlayerLogin();
+}
+
 void WorldSession::AbortLogin(WorldPackets::Character::LoginFailureReason reason)
 {
     if (!PlayerLoading() || GetPlayer())
