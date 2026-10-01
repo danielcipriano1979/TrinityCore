@@ -4662,7 +4662,7 @@ void Spell::SendCastResult(SpellCastResult result, int32* param1 /*= nullptr*/, 
         result = SPELL_FAILED_DONT_REPORT;
 
     // Forever: item spells failing is how quest items silently "don't work" on this client; log them
-    if (m_castItemEntry)
+    if (m_castItemEntry || m_spellInfo->Id == 1515 || m_spellInfo->Id == 13481)
         TC_LOG_INFO("spells", "Spell {} from item {} cast by {} failed: result {} (custom error {})", m_spellInfo->Id, m_castItemEntry, receiver->GetName(), uint32(result), uint32(m_customError));
 
     WorldPackets::Spells::CastFailed castFailed;

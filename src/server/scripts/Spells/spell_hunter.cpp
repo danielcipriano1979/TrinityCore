@@ -1371,6 +1371,47 @@ class spell_hun_tame_beast : public SpellScript
     }
 };
 
+// 1515 - Tame Beast (Classic)
+// Forever: in the Classic client Tame Beast is a channel that puts an aura on the beast; the tame itself is 13481,
+// cast when the channel completes (classic did it in the aura's dummy handler)
+class spell_hun_tame_beast_channel : public AuraScript
+{
+    static constexpr uint32 SPELL_HUNTER_TAME_BEAST_FINISH = 13481;
+
+    void OnApply(AuraEffect const* aurEff, AuraEffectHandleModes /*mode*/)
+    {
+        TC_LOG_INFO("spells", "Tame Beast: aura effect {} (type {}) applied on {} (caster {})", aurEff->GetEffIndex(), uint32(aurEff->GetAuraType()),
+            GetTarget()->GetName(), GetCaster() ? GetCaster()->GetName() : "none");
+    }
+
+    void OnRemove(AuraEffect const* aurEff, AuraEffectHandleModes /*mode*/)
+    {
+        TC_LOG_INFO("spells", "Tame Beast: aura effect {} removed from {} (mode {}, handled {})", aurEff->GetEffIndex(), GetTarget()->GetName(),
+            uint32(GetTargetApplication()->GetRemoveMode()), _handled);
+
+        if (_handled || GetTargetApplication()->GetRemoveMode() != AURA_REMOVE_BY_EXPIRE)
+            return;
+
+        Unit* caster = GetCaster();
+        if (!caster || !caster->IsAlive() || !GetTarget()->IsAlive())
+            return;
+
+        _handled = true;
+        if (sSpellMgr->GetSpellInfo(SPELL_HUNTER_TAME_BEAST_FINISH, DIFFICULTY_NONE))
+            caster->CastSpell(GetTarget(), SPELL_HUNTER_TAME_BEAST_FINISH, true);
+        else
+            TC_LOG_ERROR("spells", "Tame Beast: finishing spell {} doesn't exist", SPELL_HUNTER_TAME_BEAST_FINISH);
+    }
+
+    void Register() override
+    {
+        AfterEffectApply += AuraEffectApplyFn(spell_hun_tame_beast_channel::OnApply, EFFECT_ALL, SPELL_AURA_ANY, AURA_EFFECT_HANDLE_REAL);
+        AfterEffectRemove += AuraEffectRemoveFn(spell_hun_tame_beast_channel::OnRemove, EFFECT_ALL, SPELL_AURA_ANY, AURA_EFFECT_HANDLE_REAL);
+    }
+
+    bool _handled = false;
+};
+
 // 187700 - Tar Trap
 // 4436 - AreatriggerId
 struct areatrigger_hun_tar_trap : AreaTriggerAI
@@ -1572,6 +1613,7 @@ void AddSC_hunter_spell_scripts()
     RegisterSpellScript(spell_hun_streamline);
     RegisterSpellScript(spell_hun_surging_shots);
     RegisterSpellScript(spell_hun_tame_beast);
+    RegisterSpellScript(spell_hun_tame_beast_channel);
     RegisterAreaTriggerAI(areatrigger_hun_tar_trap);
     RegisterAreaTriggerAI(areatrigger_hun_tar_trap_activate);
     RegisterSpellScript(spell_hun_t9_4p_bonus);
