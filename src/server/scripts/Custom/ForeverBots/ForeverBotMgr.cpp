@@ -1274,7 +1274,9 @@ void ForeverBotMgr::UpdatePartyBot(ForeverBot& bot, uint32 diff, std::vector<Obj
         return;
     }
 
-    if (bot.SummonRequested || (!botPlayer->IsInCombat() && !botPlayer->IsWithinDistInMap(owner, RegroupDistance)))
+    // bots have no mounts: while the owner rides, they catch up much sooner
+    float const regroup = owner->IsMounted() ? 40.0f : RegroupDistance;
+    if (bot.SummonRequested || (!botPlayer->IsInCombat() && !owner->IsInCombat() && !botPlayer->IsWithinDistInMap(owner, regroup)))
     {
         bot.SummonRequested = false;
         Teleport(bot, botPlayer, owner);
