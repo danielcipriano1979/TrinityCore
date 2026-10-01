@@ -128,6 +128,9 @@ constexpr LootType GetLootTypeForClient(LootType lootType)
         case LOOT_FISHINGHOLE:
         case LOOT_FISHING_JUNK:
             return LOOT_FISHING;
+        case LOOT_CHEST:            // Classic 1.60: the client asserts (BC_ASSERT n < m_size) on these retail
+        case LOOT_GATHERING_NODE:   // acquire reasons; vanilla sent gameobject loot as corpse loot
+            return LOOT_CORPSE;
         default:
             break;
     }
