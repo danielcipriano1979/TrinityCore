@@ -9736,7 +9736,9 @@ uint8 Player::FindEquipSlot(Item const* item, uint8 slot, bool swap) const
             break;
         case INVTYPE_RANGED:
         case INVTYPE_THROWN:
-            slots[0] = EQUIPMENT_SLOT_RANGED;               // Classic: bows, guns, crossbows, wands and thrown have their own slot
+        case INVTYPE_RELIC:
+            // Classic 1.60: bows, guns, crossbows, thrown weapons, wands and relics have their own ranged slot
+            slots[0] = EQUIPMENT_SLOT_RANGED;
             break;
         case INVTYPE_2HWEAPON:
             slots[0] = EQUIPMENT_SLOT_MAINHAND;
@@ -10206,7 +10208,7 @@ WeaponAttackType Player::GetAttackBySlot(uint8 slot, InventoryType inventoryType
     {
         case EQUIPMENT_SLOT_MAINHAND: return inventoryType != INVTYPE_RANGED && inventoryType != INVTYPE_RANGEDRIGHT ? BASE_ATTACK : RANGED_ATTACK;
         case EQUIPMENT_SLOT_OFFHAND:  return OFF_ATTACK;
-        case EQUIPMENT_SLOT_RANGED:   return RANGED_ATTACK;
+        case EQUIPMENT_SLOT_RANGED:   return inventoryType != INVTYPE_RELIC ? RANGED_ATTACK : MAX_ATTACK;
         default:                      return MAX_ATTACK;
     }
 }
@@ -26858,7 +26860,6 @@ bool Player::HasItemFitToSpellRequirements(SpellInfo const* spellInfo, Item cons
             if (Item* item = GetUseableItemByPos(INVENTORY_SLOT_BAG_0, EQUIPMENT_SLOT_OFFHAND))
                 if (item != ignoreItem && item->IsFitToSpellRequirements(spellInfo))
                     return true;
-            // Classic: bows, guns, crossbows, wands and thrown weapons are in the ranged slot
             if (Item* item = GetUseableItemByPos(INVENTORY_SLOT_BAG_0, EQUIPMENT_SLOT_RANGED))
                 if (item != ignoreItem && item->IsFitToSpellRequirements(spellInfo))
                     return true;
@@ -31731,7 +31732,8 @@ static bool ForEachEquipmentSlot(InventoryType inventoryType, bool canDualWield,
             return true;
         case INVTYPE_RANGED:
         case INVTYPE_RANGEDRIGHT:
-        case INVTYPE_THROWN: callback(EQUIPMENT_SLOT_RANGED); return true;
+        case INVTYPE_THROWN:
+        case INVTYPE_RELIC: callback(EQUIPMENT_SLOT_RANGED); return true;
         case INVTYPE_WEAPONMAINHAND: callback(EQUIPMENT_SLOT_MAINHAND); return true;
         case INVTYPE_SHIELD:
         case INVTYPE_HOLDABLE:
@@ -31742,7 +31744,6 @@ static bool ForEachEquipmentSlot(InventoryType inventoryType, bool canDualWield,
         case INVTYPE_TABARD:
         case INVTYPE_AMMO:
         case INVTYPE_QUIVER:
-        case INVTYPE_RELIC:
         default:
             return false;
     }

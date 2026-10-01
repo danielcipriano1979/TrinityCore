@@ -5653,6 +5653,9 @@ void ObjectMgr::LoadQuests()
     }
 
     TC_LOG_INFO("server.loading", ">> Loaded {} quests definitions in {} ms", _questTemplates.size(), GetMSTimeDiffToNow(oldMSTime));
+
+    // also on `.reload quest_template`, which rebuilds every Quest
+    LoadQuestClassicLevels();
 }
 
 void ObjectMgr::LoadQuestStartersAndEnders()
@@ -7040,6 +7043,39 @@ uint32 ObjectMgr::GetTaxiMountDisplayId(uint32 id, uint32 team, bool allowed_alt
     GetCreatureModelRandomGender(&mountModel, mount_info);
 
     return mountModel.CreatureDisplayID;
+}
+
+void ObjectMgr::LoadQuestClassicLevels()
+{
+    uint32 oldMSTime = getMSTime();
+
+    for (auto& [questId, quest] : _questTemplates)
+        quest->_classicQuestLevel = 0;
+
+    //                                               0   1
+    QueryResult result = WorldDatabase.Query("SELECT ID, QuestLevel FROM quest_classic_level");
+    if (!result)
+    {
+        TC_LOG_INFO("server.loading", ">> Loaded 0 classic quest levels. DB table `quest_classic_level` is empty.");
+        return;
+    }
+
+    uint32 count = 0;
+    do
+    {
+        Field* fields = result->Fetch();
+        uint32 questId = fields[0].GetUInt32();
+        int32 questLevel = fields[1].GetInt16();
+
+        auto itr = _questTemplates.find(questId);
+        if (itr == _questTemplates.end() || questLevel == 0)
+            continue;
+
+        itr->second->_classicQuestLevel = questLevel;
+        ++count;
+    } while (result->NextRow());
+
+    TC_LOG_INFO("server.loading", ">> Loaded {} classic quest levels in {} ms", count, GetMSTimeDiffToNow(oldMSTime));
 }
 
 Quest const* ObjectMgr::GetQuestTemplate(uint32 quest_id) const
@@ -8699,6 +8735,251 @@ void ObjectMgr::LoadQuestPOI()
     } while (result->NextRow());
 
     TC_LOG_INFO("server.loading", ">> Loaded {} quest POI definitions in {} ms", _questPOIStore.size(), GetMSTimeDiffToNow(oldMSTime));
+}
+
+// Classic 1.60: the world database only has retail quest POI, vanilla quests show nothing on the map.
+// Build blobs for those quests from where their objectives are (spawns of the creatures/gameobjects to kill, use or loot)
+// and a turn-in point at the quest ender.
+void ObjectMgr::GenerateMissingQuestPOI()
+{
+    uint32 oldMSTime = getMSTime();
+
+    struct SpawnPoint { int32 MapId; float X, Y, Z; };
+
+    std::unordered_map<uint32, std::vector<SpawnPoint>> creatureSpawns;
+    for (auto const& [spawnId, data] : _creatureDataStore)
+        creatureSpawns[data.id].push_back({ int32(data.mapId), data.spawnPoint.GetPositionX(), data.spawnPoint.GetPositionY(), data.spawnPoint.GetPositionZ() });
+
+    std::unordered_map<uint32, std::vector<SpawnPoint>> gameObjectSpawns;
+    for (auto const& [spawnId, data] : _gameObjectDataStore)
+        gameObjectSpawns[data.id].push_back({ int32(data.mapId), data.spawnPoint.GetPositionX(), data.spawnPoint.GetPositionY(), data.spawnPoint.GetPositionZ() });
+
+    // item -> creature / gameobject entries that drop it
+    std::unordered_map<uint32, std::set<uint32>> itemCreatureSources;
+    std::unordered_map<uint32, std::set<uint32>> itemGameObjectSources;
+
+    if (QueryResult result = WorldDatabase.Query("SELECT d.Entry, l.Item FROM creature_loot_template l JOIN creature_template_difficulty d ON d.LootID = l.Entry AND d.DifficultyID = 0 WHERE l.ItemType = 0 AND l.Item IN (SELECT ObjectID FROM quest_objectives WHERE Type = 1)"))
+    {
+        do
+        {
+            Field* fields = result->Fetch();
+            itemCreatureSources[fields[1].GetUInt32()].insert(fields[0].GetUInt32());
+        } while (result->NextRow());
+    }
+
+    if (QueryResult result = WorldDatabase.Query("SELECT CreatureEntry, ItemId FROM creature_questitem WHERE DifficultyID = 0"))
+    {
+        do
+        {
+            Field* fields = result->Fetch();
+            itemCreatureSources[fields[1].GetUInt32()].insert(fields[0].GetUInt32());
+        } while (result->NextRow());
+    }
+
+    std::unordered_map<uint32, std::vector<uint32>> gameObjectsByLootId;
+    for (auto const& [entry, goTemplate] : _gameObjectTemplateStore)
+        if (uint32 lootId = goTemplate.GetLootId())
+            gameObjectsByLootId[lootId].push_back(entry);
+
+    if (QueryResult result = WorldDatabase.Query("SELECT Entry, Item FROM gameobject_loot_template WHERE ItemType = 0 AND Item IN (SELECT ObjectID FROM quest_objectives WHERE Type = 1)"))
+    {
+        do
+        {
+            Field* fields = result->Fetch();
+            if (std::vector<uint32> const* entries = Trinity::Containers::MapGetValuePtr(gameObjectsByLootId, fields[0].GetUInt32()))
+                itemGameObjectSources[fields[1].GetUInt32()].insert(entries->begin(), entries->end());
+        } while (result->NextRow());
+    }
+
+    if (QueryResult result = WorldDatabase.Query("SELECT GameObjectEntry, ItemId FROM gameobject_questitem"))
+    {
+        do
+        {
+            Field* fields = result->Fetch();
+            itemGameObjectSources[fields[1].GetUInt32()].insert(fields[0].GetUInt32());
+        } while (result->NextRow());
+    }
+
+    auto findAnchor = [&](uint32 questId) -> Optional<SpawnPoint>
+    {
+        for (auto const& [qId, entry] : GetCreatureQuestInvolvedRelationReverseBounds(questId))
+            if (std::vector<SpawnPoint> const* spawns = Trinity::Containers::MapGetValuePtr(creatureSpawns, entry))
+                return spawns->front();
+        for (auto const& [qId, entry] : GetGOQuestInvolvedRelationReverseBounds(questId))
+            if (std::vector<SpawnPoint> const* spawns = Trinity::Containers::MapGetValuePtr(gameObjectSpawns, entry))
+                return spawns->front();
+        return {};
+    };
+
+    // keep the group of points closest to the anchor (the quest ender), so common creatures do not cover a whole continent
+    auto selectCluster = [](std::vector<SpawnPoint> const& candidates, Optional<SpawnPoint> const& anchor) -> std::vector<SpawnPoint>
+    {
+        if (candidates.empty())
+            return {};
+
+        std::unordered_map<int32, uint32> countByMap;
+        for (SpawnPoint const& p : candidates)
+            ++countByMap[p.MapId];
+
+        int32 mapId = std::ranges::max_element(countByMap, {}, [](auto const& pair) { return pair.second; })->first;
+        if (anchor && countByMap.contains(anchor->MapId))
+            mapId = anchor->MapId;
+
+        std::vector<SpawnPoint> onMap;
+        for (SpawnPoint const& p : candidates)
+            if (p.MapId == mapId)
+                onMap.push_back(p);
+
+        SpawnPoint center = onMap.front();
+        if (anchor && anchor->MapId == mapId)
+            center = *std::ranges::min_element(onMap, {}, [&](SpawnPoint const& p) { return std::hypot(p.X - anchor->X, p.Y - anchor->Y); });
+
+        static constexpr float ClusterRadius = 350.0f;
+        static constexpr std::size_t MaxPoints = 300;
+
+        std::vector<SpawnPoint> cluster;
+        for (SpawnPoint const& p : onMap)
+            if (std::hypot(p.X - center.X, p.Y - center.Y) <= ClusterRadius)
+                cluster.push_back(p);
+
+        if (cluster.size() > MaxPoints)
+        {
+            std::ranges::sort(cluster, {}, [&](SpawnPoint const& p) { return std::hypot(p.X - center.X, p.Y - center.Y); });
+            cluster.resize(MaxPoints);
+        }
+        return cluster;
+    };
+
+    auto buildHull = [](std::vector<SpawnPoint> const& points) -> std::vector<QuestPOIBlobPoint>
+    {
+        std::vector<std::pair<int32, int32>> pts;
+        for (SpawnPoint const& p : points)
+            pts.emplace_back(int32(p.X), int32(p.Y));
+        std::ranges::sort(pts);
+        pts.erase(std::unique(pts.begin(), pts.end()), pts.end());
+
+        int32 z = int32(points.front().Z);
+        std::vector<QuestPOIBlobPoint> result;
+        if (pts.size() < 3)
+        {
+            // too few spawns for an area, draw a small square around them
+            int32 x = 0, y = 0;
+            for (auto const& [px, py] : pts) { x += px; y += py; }
+            x /= int32(pts.size());
+            y /= int32(pts.size());
+            static constexpr int32 HalfSize = 20;
+            result = { { x - HalfSize, y - HalfSize, z }, { x + HalfSize, y - HalfSize, z }, { x + HalfSize, y + HalfSize, z }, { x - HalfSize, y + HalfSize, z } };
+            return result;
+        }
+
+        // Andrew's monotone chain convex hull
+        auto cross = [](std::pair<int32, int32> const& o, std::pair<int32, int32> const& a, std::pair<int32, int32> const& b)
+        {
+            return int64(a.first - o.first) * (b.second - o.second) - int64(a.second - o.second) * (b.first - o.first);
+        };
+
+        std::vector<std::pair<int32, int32>> hull(pts.size() * 2);
+        std::size_t k = 0;
+        for (std::size_t i = 0; i < pts.size(); ++i)
+        {
+            while (k >= 2 && cross(hull[k - 2], hull[k - 1], pts[i]) <= 0)
+                --k;
+            hull[k++] = pts[i];
+        }
+        for (std::size_t i = pts.size() - 1, t = k + 1; i > 0; --i)
+        {
+            while (k >= t && cross(hull[k - 2], hull[k - 1], pts[i - 1]) <= 0)
+                --k;
+            hull[k++] = pts[i - 1];
+        }
+        hull.resize(k - 1);
+
+        if (hull.size() < 3)
+            hull.assign(pts.begin(), pts.begin() + std::min<std::size_t>(pts.size(), 2));
+
+        for (auto const& [x, y] : hull)
+            result.emplace_back(x, y, z);
+        return result;
+    };
+
+    auto getUiMapId = [](SpawnPoint const& p) -> int32
+    {
+        uint32 uiMapId = 0;
+        if (!DB2Manager::GetUiMapPosition(p.X, p.Y, p.Z, p.MapId, 0, 0, 0, UI_MAP_SYSTEM_WORLD, false, &uiMapId))
+            return -1;
+        return int32(uiMapId);
+    };
+
+    uint32 generatedQuests = 0;
+    for (auto const& [questId, quest] : _questTemplates)
+    {
+        if (_questPOIStore.contains(questId))
+            continue;
+
+        Optional<SpawnPoint> anchor = findAnchor(questId);
+        std::vector<QuestPOIBlobData> blobs;
+
+        for (QuestObjective const& objective : quest->GetObjectives())
+        {
+            std::vector<SpawnPoint> candidates;
+            auto addSpawns = [&](std::unordered_map<uint32, std::vector<SpawnPoint>> const& store, uint32 entry)
+            {
+                if (std::vector<SpawnPoint> const* spawns = Trinity::Containers::MapGetValuePtr(store, entry))
+                    candidates.insert(candidates.end(), spawns->begin(), spawns->end());
+            };
+
+            switch (objective.Type)
+            {
+                case QUEST_OBJECTIVE_MONSTER:
+                case QUEST_OBJECTIVE_TALKTO:
+                    addSpawns(creatureSpawns, objective.ObjectID);
+                    break;
+                case QUEST_OBJECTIVE_GAMEOBJECT:
+                    addSpawns(gameObjectSpawns, objective.ObjectID);
+                    break;
+                case QUEST_OBJECTIVE_ITEM:
+                    if (std::set<uint32> const* sources = Trinity::Containers::MapGetValuePtr(itemCreatureSources, objective.ObjectID))
+                        for (uint32 entry : *sources)
+                            addSpawns(creatureSpawns, entry);
+                    if (std::set<uint32> const* sources = Trinity::Containers::MapGetValuePtr(itemGameObjectSources, objective.ObjectID))
+                        for (uint32 entry : *sources)
+                            addSpawns(gameObjectSpawns, entry);
+                    break;
+                default:
+                    break;
+            }
+
+            std::vector<SpawnPoint> cluster = selectCluster(candidates, anchor);
+            if (cluster.empty())
+                continue;
+
+            int32 uiMapId = getUiMapId(cluster.front());
+            if (uiMapId < 0)
+                continue;
+
+            blobs.emplace_back(0, objective.StorageIndex, objective.ID, objective.ObjectID, cluster.front().MapId, uiMapId, 0, 0, 0, 0, 0, 0,
+                buildHull(cluster), false);
+        }
+
+        // turn-in point at the quest ender
+        if (anchor)
+        {
+            int32 uiMapId = getUiMapId(*anchor);
+            if (uiMapId >= 0)
+                blobs.emplace_back(0, -1, 0, 0, anchor->MapId, uiMapId, 0, 0, 0, 0, 0, 0,
+                    std::vector<QuestPOIBlobPoint>{ { int32(anchor->X), int32(anchor->Y), int32(anchor->Z) } }, false);
+        }
+
+        if (blobs.empty())
+            continue;
+
+        QuestPOIData& poiData = _questPOIStore[questId];
+        poiData.QuestID = questId;
+        poiData.Blobs = std::move(blobs);
+        ++generatedQuests;
+    }
+
+    TC_LOG_INFO("server.loading", ">> Generated quest POI for {} quests without POI data in {} ms", generatedQuests, GetMSTimeDiffToNow(oldMSTime));
 }
 
 void ObjectMgr::LoadNPCSpellClickSpells()

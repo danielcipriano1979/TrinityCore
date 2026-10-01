@@ -433,7 +433,9 @@ WorldSocket::ReadDataHandlerResult WorldSocket::ReadDataHandler()
 
             if (!opcodeTable[opcode])
             {
-                TC_LOG_ERROR("network.opcode", "WorldSocket::ReadDataHandler: No defined handler for opcode {} sent by {}", GetOpcodeNameForLogging(opcode), _worldSession->GetPlayerInfo());
+                // Classic 1.60: include the payload so classic-only client opcodes (e.g. ammo) can be reverse engineered from the log
+                TC_LOG_ERROR("network.opcode", "WorldSocket::ReadDataHandler: No defined handler for opcode {} (raw 0x{:06X}) sent by {} data: {}", GetOpcodeNameForLogging(opcode), rawOpcode, _worldSession->GetPlayerInfo(),
+                    Trinity::Impl::ByteArrayToHexStr(packet.data() + packet.rpos(), std::min<std::size_t>(packet.size() - packet.rpos(), 256)));
                 break;
             }
 

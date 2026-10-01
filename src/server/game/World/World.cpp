@@ -1648,6 +1648,9 @@ bool World::SetInitialWorldSettings()
     TC_LOG_INFO("server.loading", "Loading Quests Starters and Enders...");
     sObjectMgr->LoadQuestStartersAndEnders();                    // must be after quest load
 
+    TC_LOG_INFO("server.loading", "Generating missing Quest POI...");
+    sObjectMgr->GenerateMissingQuestPOI();                       // must be after spawns, quest POI and quest starters/enders
+
     TC_LOG_INFO("server.loading", "Loading Quest Greetings...");
     sObjectMgr->LoadQuestGreetings();
 
