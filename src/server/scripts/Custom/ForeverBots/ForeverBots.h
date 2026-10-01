@@ -10,6 +10,7 @@
 #ifndef FOREVER_BOTS_H
 #define FOREVER_BOTS_H
 
+#include "DatabaseEnvFwd.h"
 #include "Define.h"
 #include "ObjectGuid.h"
 #include "PlayerAI.h"
@@ -49,6 +50,8 @@ struct ForeverBot
     uint8 Index = 0;                // position around the owner
     bool Ready = false;             // in world, leveled, grouped, AI set
     bool Relogging = false;         // moving to the owner's map through a logout/login
+    bool Creating = false;          // new character still being saved
+    bool CreateFailed = false;
     uint32 DeadTimer = 0;
     bool SummonRequested = false;
 };
@@ -72,7 +75,8 @@ public:
 
 private:
     uint32 GetBotAccountId();
-    ObjectGuid FindOrCreateCharacter(Player* owner, uint8 classId, uint32 accountId, WorldSession* session, std::string& error);
+    ObjectGuid FindOrCreateCharacter(Player* owner, uint8 classId, uint32 accountId, WorldSession* session, std::string& error,
+        CharacterDatabaseTransaction& pendingCommit);
     void PlaceCharacterAt(ObjectGuid guid, Player* owner);
     void InitializeInWorld(ForeverBot& bot, Player* botPlayer, Player* owner);
     void LearnClassSpells(Player* bot);

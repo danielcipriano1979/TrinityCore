@@ -101,7 +101,8 @@ static std::string GenerateBotName()
     return {};
 }
 
-ObjectGuid ForeverBotMgr::FindOrCreateCharacter(Player* owner, uint8 classId, uint32 accountId, WorldSession* session, std::string& error)
+ObjectGuid ForeverBotMgr::FindOrCreateCharacter(Player* owner, uint8 classId, uint32 accountId, WorldSession* session, std::string& error,
+    CharacterDatabaseTransaction& pendingCommit)
 {
     bool const horde = owner->GetTeam() == HORDE;
     std::vector<uint8> races;
@@ -155,11 +156,12 @@ ObjectGuid ForeverBotMgr::FindOrCreateCharacter(Player* owner, uint8 classId, ui
         return ObjectGuid::Empty;
     }
 
+    // the character statements are prepared on the async connections only (a synchronous commit asserts on m_mStmt):
+    // the caller commits pendingCommit asynchronously and logs the bot in once it is done
     LoginDatabaseTransaction loginTransaction = LoginDatabase.BeginTransaction();
-    CharacterDatabaseTransaction characterTransaction = CharacterDatabase.BeginTransaction();
-    newChar->SaveToDB(loginTransaction, characterTransaction, true);
-    CharacterDatabase.DirectCommitTransaction(characterTransaction);
-    LoginDatabase.DirectCommitTransaction(loginTransaction);
+    pendingCommit = CharacterDatabase.BeginTransaction();
+    newChar->SaveToDB(loginTransaction, pendingCommit, true);
+    LoginDatabase.CommitTransaction(loginTransaction);
 
     ObjectGuid guid = newChar->GetGUID();
     sCharacterCache->AddCharacterCacheEntry(guid, accountId, name, createInfo.Sex, createInfo.Race, classId, newChar->GetLevel(), false);
@@ -197,14 +199,13 @@ std::string ForeverBotMgr::AddBot(Player* owner, uint8 classId, BotRole role)
 
     WorldSession* session = CreateBotSession(accountId);
     std::string error;
-    ObjectGuid guid = FindOrCreateCharacter(owner, classId, accountId, session, error);
+    CharacterDatabaseTransaction pendingCommit;
+    ObjectGuid guid = FindOrCreateCharacter(owner, classId, accountId, session, error, pendingCommit);
     if (guid.IsEmpty())
     {
         delete session;
         return error;
     }
-
-    PlaceCharacterAt(guid, owner);
 
     // free position index around the owner
     uint8 index = 0;
@@ -227,7 +228,32 @@ std::string ForeverBotMgr::AddBot(Player* owner, uint8 classId, BotRole role)
     bot.Role = role;
     bot.Index = index;
 
-    session->LoginBotCharacter(guid);
+    if (!pendingCommit)
+    {
+        PlaceCharacterAt(guid, owner);
+        session->LoginBotCharacter(guid);
+        return {};
+    }
+
+    // new character: log in once it is saved (the callback runs from the session update, see Update)
+    bot.Creating = true;
+    session->AddTransactionCallback(CharacterDatabase.AsyncCommitTransaction(pendingCommit)).AfterComplete([this, guid](bool success)
+    {
+        ForeverBot* created = GetBot(guid);
+        if (!created)
+            return;
+
+        created->Creating = false;
+        Player* owner = ObjectAccessor::FindConnectedPlayer(created->Owner);
+        if (!success || !owner)
+        {
+            created->CreateFailed = true;
+            return;
+        }
+
+        PlaceCharacterAt(guid, owner);
+        created->Session->LoginBotCharacter(guid);
+    });
     return {};
 }
 
@@ -386,7 +412,7 @@ void ForeverBotMgr::Update(uint32 diff)
         Player* botPlayer = bot.Session->GetPlayer();
         if (!botPlayer || !botPlayer->IsInWorld())
         {
-            if (!bot.Session->PlayerLoading() && !botPlayer)
+            if (bot.CreateFailed || (!bot.Creating && !bot.Session->PlayerLoading() && !botPlayer))
             {
                 TC_LOG_ERROR("misc", "ForeverBots: bot {} could not log in", guid.ToString());
                 ChatHandler(owner->GetSession()).SendSysMessage("ForeverBots: a bot could not log in.");
