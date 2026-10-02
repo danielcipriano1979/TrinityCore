@@ -498,7 +498,7 @@ void ForeverBotMgr::LoadClassicSpells()
     }
 
     // the class quest spells LearnClassSpells gives bots (whatever the quest data says)
-    for (uint32 spellId : { 71u, 2458u, 5487u, 8071u, 3599u, 5394u, 697u, 712u, 691u, 7328u })
+    for (uint32 spellId : { 71u, 2458u, 5487u, 8071u, 3599u, 5394u, 688u, 697u, 712u, 691u, 7328u })
         _talentSpells.insert(spellId);
 
     // talents (trait definitions)
@@ -550,10 +550,16 @@ void ForeverBotMgr::RemoveNonClassicSpells(Player* bot)
         if (info && !IsClassicSpell(bot->GetClass(), info))
             remove.push_back(spellId);
     }
+    std::string names;
     for (uint32 spellId : remove)
+    {
+        if (_debug)
+            if (SpellInfo const* info = sSpellMgr->GetSpellInfo(spellId, DIFFICULTY_NONE); info && info->SpellName)
+                names += Trinity::StringFormat(" {}({})", (*info->SpellName)[LOCALE_enUS], spellId);
         bot->RemoveSpell(spellId, false, false);
-    if (!remove.empty())
-        TC_LOG_DEBUG("misc", "ForeverBots: {} unlearned {} non-Classic spells", bot->GetName(), remove.size());
+    }
+    if (!remove.empty() && _debug)
+        TC_LOG_INFO("server.foreverbots", "ForeverBots: {} unlearned {} non-Classic spells:{}", bot->GetName(), remove.size(), names);
 }
 
 void ForeverBotMgr::LearnClassSpells(Player* bot)
@@ -572,6 +578,7 @@ void ForeverBotMgr::LearnClassSpells(Player* bot)
         { CLASS_SHAMAN,   4, 8071 },    // Stoneskin Totem
         { CLASS_SHAMAN,  10, 3599 },    // Searing Totem
         { CLASS_SHAMAN,  20, 5394 },    // Healing Stream Totem
+        { CLASS_WARLOCK,  1, 688 },     // Summon Imp
         { CLASS_WARLOCK, 10, 697 },     // Summon Voidwalker
         { CLASS_WARLOCK, 20, 712 },     // Summon Succubus
         { CLASS_WARLOCK, 30, 691 },     // Summon Felhunter
@@ -581,6 +588,15 @@ void ForeverBotMgr::LearnClassSpells(Player* bot)
         if (quest.ClassId == bot->GetClass() && quest.Level <= bot->GetLevel() && !bot->HasSpell(quest.SpellId))
             if (sSpellMgr->GetSpellInfo(quest.SpellId, DIFFICULTY_NONE))
                 bot->LearnSpell(quest.SpellId, false, 0, true);
+
+    // the level 1 spells of the class (a new character has them; older bot code may have removed some)
+    if (ChrClassesEntry const* classEntry = sChrClassesStore.LookupEntry(bot->GetClass()))
+        for (uint32 spellId : _starterSpells)
+            if (!bot->HasSpell(spellId))
+                if (SpellInfo const* info = sSpellMgr->GetSpellInfo(spellId, DIFFICULTY_NONE);
+                    info && info->SpellFamilyName == classEntry->SpellClassSet && !info->IsPassive() && bot->IsSpellFitByClassAndRace(spellId)
+                    && SpellMgr::IsSpellValid(info, bot, false))
+                    bot->LearnSpell(spellId, false, 0, true);
 
     // what the class trainers sell, up to the bot's level
     auto itr = _trainerSpells.find(bot->GetClass());

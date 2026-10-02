@@ -335,7 +335,7 @@ void ForeverBotAI::ProposeClassRotation(BotContext& ctx, Unit* target, int32 off
             break;
         }
         case CLASS_WARLOCK:
-            if (manaPct < 30.0f && me->GetHealthPct() > 60.0f)
+            if (manaPct < 20.0f && me->GetHealthPct() > 70.0f)
                 ProposeNamed(R(20), "Life Tap", me, "mana");
             if (me->GetHealthPct() < 45.0f)
                 ProposeNamed(R(19), "Drain Life", target, "heal myself");

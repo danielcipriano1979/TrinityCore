@@ -187,9 +187,10 @@ void ForeverBotAI::Decide(BotContext& ctx, uint32 elapsed)
                 ProposeTank(ctx, target);
             else if (role == BotRole::Heal)
             {
-                // a healer with mana to spare helps with damage
-                if (me->GetPowerPct(POWER_MANA) > 70.0f)
-                    ProposeDps(ctx, target, -8);
+                // a healer keeps its mana for heals: it helps with the wand only (no mana)
+                if (!me->GetCurrentSpell(CURRENT_AUTOREPEAT_SPELL))
+                    if (BotSpell const* wand = _spells.Find("Shoot"); wand && CanCast(wand, target))
+                        _brain.Propose(R_ROTATION - 5, wand->Name.c_str(), target, [this, wand, target]() { return Cast(wand, target); }, "healer, wand");
             }
             else
                 ProposeDps(ctx, target);
@@ -227,18 +228,14 @@ void ForeverBotAI::Decide(BotContext& ctx, uint32 elapsed)
     // movement runs beside the decisions (not while casting)
     if (inCombat || target)
         MoveInCombat(ctx, target);
-    else if (!done)
-    {
-        MoveOutOfCombat(ctx);
-        bool const resting = me->GetHealthPct() < 95.0f || (me->GetMaxPower(POWER_MANA) && me->GetPowerPct(POWER_MANA) < 95.0f);
-        if (resting)
-            _state = BotState::Rest;
-        else
-            _state = BotState::Idle;
-        Rest(ctx, elapsed);
-    }
     else
-        _state = BotState::Idle;
+    {
+        if (!me->HasUnitState(UNIT_STATE_CASTING))
+            MoveOutOfCombat(ctx);       // keep up with the group, also between buffs
+        bool const resting = me->GetHealthPct() < 95.0f || (me->GetMaxPower(POWER_MANA) && me->GetPowerPct(POWER_MANA) < 95.0f);
+        _state = resting ? BotState::Rest : BotState::Idle;
+        Rest(ctx, elapsed);         // eats and drinks whenever it stands still out of combat
+    }
 
     data.State = BotStateName(_state);
     (void)proposals;
@@ -261,8 +258,8 @@ void ForeverBotAI::LogDecision(BotContext const& ctx, ForeverBots::Candidate con
     _lastDecisionLog = ctx.Now;
 
     float const mana = me->GetMaxPower(POWER_MANA) ? me->GetPowerPct(POWER_MANA) : 0.0f;
-    TC_LOG_INFO("server.foreverbots", "[BotAI] Bot={} Role={} State={} HP={:.0f}% Mana={:.0f}% Enemies={} Decision={}",
-        me->GetName(), BotRoleName(data.Role), BotStateName(_state), me->GetHealthPct(), mana, ctx.Enemies.size(), decision);
+    TC_LOG_INFO("server.foreverbots", "[BotAI] T={} Bot={} Role={} State={} HP={:.0f}% Mana={:.0f}% Enemies={} Decision={}",
+        ctx.Now / 1000, me->GetName(), BotRoleName(data.Role), BotStateName(_state), me->GetHealthPct(), mana, ctx.Enemies.size(), decision);
 }
 
 void ForeverBotAI::DamageDealt(Unit* /*victim*/, uint32& damage, DamageEffectType /*damageType*/)

@@ -201,6 +201,32 @@ void ForeverBotAI::MoveOutOfCombat(BotContext& ctx)
         return;
 
     MotionMaster* motion = me->GetMotionMaster();
+
+    // a follow that doesn't bring me closer (formation spot in a wall, no path): straight to the leader, then regroup
+    float const dist = me->GetDistance(ctx.Leader);
+    if (dist > 12.0f && dist >= _followLastDist - 0.5f)
+        _followStuckTime += _thinkInterval;
+    else
+        _followStuckTime = 0;
+    _followLastDist = dist;
+    if (_followStuckTime >= 12000)
+    {
+        _followStuckTime = 0;
+        ctx.Data->SummonRequested = true;       // the manager (world thread) brings it next to its owner
+        if (ctx.Data->Debug || sForeverBotMgr->IsGlobalDebug())
+            TC_LOG_INFO("server.foreverbots", "[BotAI] Bot={} couldn't follow {} ({:.0f} yd), regrouped", me->GetName(), ctx.Leader->GetName(), dist);
+        return;
+    }
+    if (_followStuckTime >= 4000)
+    {
+        if (motion->GetCurrentMovementGeneratorType() != POINT_MOTION_TYPE)
+        {
+            motion->Clear();
+            motion->MovePoint(0, ctx.Leader->GetPosition());
+        }
+        return;
+    }
+
     if (motion->GetCurrentMovementGeneratorType() == FOLLOW_MOTION_TYPE)
         return;
 
@@ -226,20 +252,21 @@ void ForeverBotAI::MoveOutOfCombat(BotContext& ctx)
     motion->MoveFollow(ctx.Leader, distance, ChaseAngle(angle));
 }
 
-bool ForeverBotAI::IsPartyReadyToPull(BotContext const& ctx) const
+bool ForeverBotAI::IsPartyReadyToPull(BotContext const& ctx, std::string* reason) const
 {
+    auto notReady = [reason](std::string why) { if (reason) *reason = std::move(why); return false; };
     if (!ctx.Dead.empty())
-        return false;
+        return notReady(Trinity::StringFormat("{} is dead", ctx.Dead.front()->GetName()));
     for (Player* member : ctx.Members)
     {
         if (!member->IsWithinDistInMap(me, ReadyDistance))
-            return false;
+            return notReady(Trinity::StringFormat("{} is {:.0f} yd away", member->GetName(), me->GetDistance(member)));
         if (member->GetHealthPct() < 70.0f)
-            return false;
+            return notReady(Trinity::StringFormat("{} at {:.0f}% health", member->GetName(), member->GetHealthPct()));
         if (ctx.IsHealer(member) && member->GetMaxPower(POWER_MANA) && member->GetPowerPct(POWER_MANA) < 60.0f)
-            return false;
+            return notReady(Trinity::StringFormat("{} at {:.0f}% mana", member->GetName(), member->GetPowerPct(POWER_MANA)));
         if (member->HasUnitState(UNIT_STATE_CASTING))
-            return false;
+            return notReady(Trinity::StringFormat("{} is casting", member->GetName()));
     }
     return true;
 }
@@ -271,7 +298,8 @@ void ForeverBotAI::ProposePull(BotContext& ctx)
     if (!ctx.AutonomousLeader || ctx.GroupInCombat || ctx.Data->Passive)
         return;
 
-    if (!IsPartyReadyToPull(ctx))
+    std::string why;
+    if (!IsPartyReadyToPull(ctx, &why))
     {
         _brain.Propose(R_MOVE, "WAIT_PARTY", nullptr, [this]()
         {
@@ -281,29 +309,50 @@ void ForeverBotAI::ProposePull(BotContext& ctx)
                 me->StopMoving();
             }
             return true;
-        }, "group not ready (health, mana, distance)");
+        }, why);
         return;
     }
 
+    // candidates: in a dungeon every living hostile of the instance (a small map: the next pack may be far, or the
+    // ones around unreachable); elsewhere what is around
     std::list<Creature*> found;
-    PullCheck check{ me, ExploreRange };
-    Trinity::CreatureListSearcher<PullCheck> searcher(me, found, check);
-    Cell::VisitGridObjects(me, searcher, ExploreRange);
+    if (me->GetMap()->IsDungeon())
+    {
+        PullCheck anywhere{ me, 100000.0f };
+        for (auto const& [spawnId, creature] : me->GetMap()->GetCreatureBySpawnIdStore())
+            if (creature->IsInWorld() && anywhere(creature))
+                found.push_back(creature);
+    }
+    else
+    {
+        PullCheck check{ me, ExploreRange };
+        Trinity::CreatureListSearcher<PullCheck> searcher(me, found, check);
+        Cell::VisitGridObjects(me, searcher, ExploreRange);
+    }
 
-    // nearest by path (straight line where there is no navmesh)
+    // nearest by path (straight line where there is no navmesh); paths only for the few nearest
+    found.sort([this](Creature* a, Creature* b) { return me->GetExactDist2dSq(a) < me->GetExactDist2dSq(b); });
+
     Creature* best = nullptr;
     float bestLength = 100000.0f;
+    uint32 paths = 0;
     for (Creature* creature : found)
     {
         if (!IsValidEnemy(creature))
             continue;
         float length = me->GetDistance(creature);
-        if (length >= bestLength)
-            continue;           // a path is never shorter than the straight line
+        if (length >= bestLength || paths >= 8)
+            break;              // sorted: a path is never shorter than the straight line
+        ++paths;
         PathGenerator path(me);
         bool const ok = path.CalculatePath(creature->GetPositionX(), creature->GetPositionY(), creature->GetPositionZ());
-        if (!ok || (path.GetPathType() & (PATHFIND_NOPATH | PATHFIND_INCOMPLETE)))
+        // a far target may have a partial path (length limit): fine to walk toward it
+        uint32 const bad = length > PullRange ? uint32(PATHFIND_NOPATH) : uint32(PATHFIND_NOPATH | PATHFIND_INCOMPLETE);
+        if (!ok || (path.GetPathType() & bad))
+        {
+            _unreachable[creature->GetGUID()] = GameTime::GetGameTimeMS() + 20000;     // don't ask again for a while
             continue;
+        }
         if (!(path.GetPathType() & PATHFIND_NOT_USING_PATH))
             length = path.GetPathLength();
         if (length < bestLength)
@@ -313,7 +362,12 @@ void ForeverBotAI::ProposePull(BotContext& ctx)
         }
     }
     if (!best)
+    {
+        if ((ctx.Data->Debug || sForeverBotMgr->IsGlobalDebug()) && ctx.Now - _lastDecisionLog > 3000)
+            TC_LOG_INFO("server.foreverbots", "[BotAI] Bot={} nothing to pull: {} candidates, {} paths tried, {} marked unreachable",
+                me->GetName(), found.size(), paths, _unreachable.size());
         return;
+    }
 
     PartyBlackboard* party = ctx.Party;
     uint32 const now = ctx.Now;

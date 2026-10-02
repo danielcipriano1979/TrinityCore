@@ -249,7 +249,7 @@ private:
     void MoveInCombat(BotContext& ctx, Unit* target);
     void MoveOutOfCombat(BotContext& ctx);
     void ProposePull(BotContext& ctx);
-    bool IsPartyReadyToPull(BotContext const& ctx) const;
+    bool IsPartyReadyToPull(BotContext const& ctx, std::string* reason = nullptr) const;
     bool IsChasing(Unit* target) const;
     void ChaseTarget(Unit* target, float minRange, float maxRange, Optional<float> angle);
     void CheckStuck(Unit* target, float wantedRange, uint32 elapsed);
@@ -266,6 +266,8 @@ private:
     uint32 _slowTimer = 0;
     std::unordered_map<uint32, uint32> _blockedSpells;      // spell -> blocked until (failed cast grace)
     std::unordered_map<uint64, uint32> _failLogged;         // debug: spell+reason -> next log
+    float _followLastDist = 0.0f;                           // follow progress (out of combat)
+    uint32 _followStuckTime = 0;
     ObjectGuid _losBlocked;                                 // the server refused a cast on it for line of sight
     uint32 _losBlockedUntil = 0;
     std::unordered_map<ObjectGuid, uint32> _unreachable;    // enemy -> ignored until

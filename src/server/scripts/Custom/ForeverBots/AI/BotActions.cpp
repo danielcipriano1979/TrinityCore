@@ -76,6 +76,8 @@ bool ForeverBotAI::Cast(BotSpell const* spell, Unit* target)
     if (!CanCast(spell, target))
         return false;
 
+    if (me->GetStandState() != UNIT_STAND_STATE_STAND)
+        me->SetStandState(UNIT_STAND_STATE_STAND);      // done eating to cast
     // the server only lands spells and swings on a target in front: a client turns its player, a bot is turned here
     if (target != me && !me->HasInArc(float(M_PI) / 2, target))
         me->SetFacingToObject(target);

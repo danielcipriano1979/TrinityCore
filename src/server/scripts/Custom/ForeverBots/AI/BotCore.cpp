@@ -66,6 +66,9 @@ namespace ForeverBots
             {
                 if (!effect.IsEffect())
                     continue;
+                // effects on my pet (Health Funnel, Mend Pet...) are not damage or heals for the group
+                if (effect.TargetA.GetTarget() == TARGET_UNIT_PET)
+                    continue;
 
                 int32 const value = int32(effect.CalcValue(me));
                 bool const enemy = IsEnemyCheck(effect);
@@ -183,6 +186,14 @@ namespace ForeverBots
             // stances, forms, aspects, seals, armors, auras, elemental shields: exclusive, the class layer picks one
             if (info->GetSpellSpecific() != SPELL_SPECIFIC_NORMAL)
                 spell.Kinds &= ~(KIND_BUFF | KIND_SELF_BUFF);
+
+            // situational buffs nobody casts on the group by default (Dampen Magic even lowers the heals received)
+            static std::string_view const SituationalBuffs[] = { "Dampen Magic", "Amplify Magic", "Unending Breath", "Detect Invisibility",
+                "Detect Lesser Invisibility", "Detect Greater Invisibility", "Water Walking", "Water Breathing", "Levitate", "Slow Fall",
+                "Sense Demons", "Sense Undead", "Blessing of Salvation", "Blessing of Protection", "Blessing of Freedom", "Thorns" };
+            for (std::string_view situational : SituationalBuffs)
+                if (name == situational)
+                    spell.Kinds &= ~(KIND_BUFF | KIND_SELF_BUFF);
             return spell;
         }
     }
