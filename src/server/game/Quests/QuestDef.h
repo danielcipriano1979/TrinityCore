@@ -644,8 +644,6 @@ class TC_GAME_API Quest
         int32 GetClassicMinLevel() const { return _classicMinLevel; }
         void SetClassicLevelRange(int32 minLevel, uint32 maxLevel) { _classicMinLevel = minLevel; if (maxLevel) _maxLevel = maxLevel; }
         uint32 GetContentTuningId() const { return _contentTuningID; }
-        // Classic 1.60: vanilla quest level from `quest_classic_level` (0 = none, -1 = scales with the player)
-        int32  GetClassicQuestLevel() const { return _classicQuestLevel; }
         int32  GetZoneOrSort() const { return _questSortID; }
         uint32 GetMaxLevel() const { return _maxLevel; }
         uint32 GetQuestInfoID() const { return _questInfoID; }
@@ -804,7 +802,6 @@ class TC_GAME_API Quest
         int32 _classicMoney = 0;
         uint32 _classicMoneyMaxLevel = 0;
         uint32 _contentTuningID = 0;
-        int32 _classicQuestLevel = 0;
         int32 _questSortID = 0;
         uint32 _questInfoID = 0;
         uint32 _suggestedPlayers = 0;

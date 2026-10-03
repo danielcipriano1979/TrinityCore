@@ -1248,7 +1248,6 @@ class TC_GAME_API ObjectMgr
         VehicleAccessoryList const* GetVehicleAccessoryList(Vehicle* veh) const;
 
         void LoadQuests();
-        void LoadQuestClassicLevels();
         void GenerateMissingQuestPOI();
         void LoadQuestStartersAndEnders();
         void LoadGameobjectQuestStarters();

@@ -5653,9 +5653,6 @@ void ObjectMgr::LoadQuests()
     }
 
     TC_LOG_INFO("server.loading", ">> Loaded {} quests definitions in {} ms", _questTemplates.size(), GetMSTimeDiffToNow(oldMSTime));
-
-    // also on `.reload quest_template`, which rebuilds every Quest
-    LoadQuestClassicLevels();
 }
 
 void ObjectMgr::LoadQuestStartersAndEnders()
@@ -7045,38 +7042,6 @@ uint32 ObjectMgr::GetTaxiMountDisplayId(uint32 id, uint32 team, bool allowed_alt
     return mountModel.CreatureDisplayID;
 }
 
-void ObjectMgr::LoadQuestClassicLevels()
-{
-    uint32 oldMSTime = getMSTime();
-
-    for (auto& [questId, quest] : _questTemplates)
-        quest->_classicQuestLevel = 0;
-
-    //                                               0   1
-    QueryResult result = WorldDatabase.Query("SELECT ID, QuestLevel FROM quest_classic_level");
-    if (!result)
-    {
-        TC_LOG_INFO("server.loading", ">> Loaded 0 classic quest levels. DB table `quest_classic_level` is empty.");
-        return;
-    }
-
-    uint32 count = 0;
-    do
-    {
-        Field* fields = result->Fetch();
-        uint32 questId = fields[0].GetUInt32();
-        int32 questLevel = fields[1].GetInt16();
-
-        auto itr = _questTemplates.find(questId);
-        if (itr == _questTemplates.end() || questLevel == 0)
-            continue;
-
-        itr->second->_classicQuestLevel = questLevel;
-        ++count;
-    } while (result->NextRow());
-
-    TC_LOG_INFO("server.loading", ">> Loaded {} classic quest levels in {} ms", count, GetMSTimeDiffToNow(oldMSTime));
-}
 
 Quest const* ObjectMgr::GetQuestTemplate(uint32 quest_id) const
 {
