@@ -345,7 +345,10 @@ void ForeverBotAI::ProposePull(BotContext& ctx)
             break;              // sorted: a path is never shorter than the straight line
         ++paths;
         PathGenerator path(me);
+        // the bot moves in straight lines (see UpdateAI), but reachability needs the real navmesh path
+        me->ClearUnitState(UNIT_STATE_IGNORE_PATHFINDING);
         bool const ok = path.CalculatePath(creature->GetPositionX(), creature->GetPositionY(), creature->GetPositionZ());
+        me->AddUnitState(UNIT_STATE_IGNORE_PATHFINDING);
         // a far target may have a partial path (length limit): fine to walk toward it
         uint32 const bad = length > PullRange ? uint32(PATHFIND_NOPATH) : uint32(PATHFIND_NOPATH | PATHFIND_INCOMPLETE);
         if (!ok || (path.GetPathType() & bad))

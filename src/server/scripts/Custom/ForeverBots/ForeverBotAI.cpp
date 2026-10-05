@@ -125,6 +125,11 @@ void ForeverBotAI::UpdateAI(uint32 diff)
     if (!data || !data->Ready)
         return;
 
+    // the 1.60 client crashes on server-driven multi-point paths for players ("mergePathResult", Unit_C.cpp):
+    // bots move in straight lines; navmesh paths are only used to judge what is reachable (ProposePull)
+    if (!me->HasUnitState(UNIT_STATE_IGNORE_PATHFINDING))
+        me->AddUnitState(UNIT_STATE_IGNORE_PATHFINDING);
+
     BotContext ctx;
     if (!BuildContext(ctx))
         return;
