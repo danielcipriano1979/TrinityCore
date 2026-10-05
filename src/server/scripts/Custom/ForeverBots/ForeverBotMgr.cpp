@@ -982,6 +982,20 @@ void ForeverBotMgr::SpendTalents(Player* bot, BotRole role)
         bot->UpdateTraitConfig(std::move(config), 0, false);
 }
 
+// The Classic combat formulas use the vanilla weapon and defense skills (hit, miss, crit, glancing), which grow with use.
+// A bot jumps levels at its logins: give it the skill a character of its level would have trained (level x 5),
+// otherwise it misses almost every swing (a level 36 warrior was at 22 in two-handed axes).
+void ForeverBotMgr::MaxCombatSkills(Player* bot)
+{
+    static uint32 const CombatSkills[] = { 43 /*swords*/, 44 /*axes*/, 45 /*bows*/, 46 /*guns*/, 54 /*maces*/, 55 /*2h swords*/,
+        95 /*defense*/, 136 /*staves*/, 160 /*2h maces*/, 162 /*unarmed*/, 172 /*2h axes*/, 173 /*daggers*/, 176 /*thrown*/,
+        226 /*crossbows*/, 228 /*wands*/, 229 /*polearms*/, 473 /*fist weapons*/ };
+    uint16 const max = uint16(bot->GetLevel() * 5);
+    for (uint32 skill : CombatSkills)
+        if (bot->HasSkill(skill) && (bot->GetPureSkillValue(skill) < max || bot->GetPureMaxSkillValue(skill) < max))
+            bot->SetSkill(skill, bot->GetSkillStep(skill), max, max);
+}
+
 // Runs inside the bot's login, after it is loaded and before it is added to the map: nobody sees it yet, so the
 // level, the spells, the gear and the group membership reach the other players in the create object. Joining a
 // group while visible sends a full party member values update, which crashes the 1.60 client.
@@ -1005,6 +1019,7 @@ void ForeverBotMgr::PrepareBeforeWorld(ObjectGuid guid, Player* botPlayer)
     LearnClassSpells(botPlayer);
     SpendTalents(botPlayer, bot->Role);
     AutoGear(botPlayer, bot->Role);
+    MaxCombatSkills(botPlayer);
     if (botPlayer->isDead())
         botPlayer->ResurrectPlayer(1.0f);
     botPlayer->SetFullHealth();
@@ -1693,6 +1708,31 @@ void ForeverBotMgr::SetDebug(bool on)
     _debug = on;
     for (auto& [guid, bot] : _bots)
         bot.Debug = on;
+}
+
+std::vector<std::string> ForeverBotMgr::DescribeStats()
+{
+    std::vector<std::string> lines;
+    for (auto const& [guid, bot] : _bots)
+    {
+        Player* p = bot.Session ? bot.Session->GetPlayer() : nullptr;
+        if (!p || !p->IsInWorld())
+            continue;
+        std::string items;
+        for (uint8 slot = EQUIPMENT_SLOT_START; slot < EQUIPMENT_SLOT_END; ++slot)
+            if (Item* item = p->GetItemByPos(INVENTORY_SLOT_BAG_0, slot))
+                items += Trinity::StringFormat(" {}:{}(il{})", slot, item->GetEntry(), item->GetTemplate()->GetBaseItemLevel());
+        Unit* victim = p->GetVictim();
+        lines.push_back(Trinity::StringFormat("{} lvl {} class {} {} | hp {}/{} armor {} | str {} agi {} sta {} int {} spi {} | ap {} rap {} | mh {:.0f}-{:.0f} speed {} | victim {}{}",
+            p->GetName(), p->GetLevel(), p->GetClass(), BotRoleName(bot.Role), p->GetHealth(), p->GetMaxHealth(), p->GetArmor(),
+            p->GetStat(STAT_STRENGTH), p->GetStat(STAT_AGILITY), p->GetStat(STAT_STAMINA), p->GetStat(STAT_INTELLECT), p->GetStat(STAT_SPIRIT),
+            p->GetTotalAttackPowerValue(BASE_ATTACK), p->GetTotalAttackPowerValue(RANGED_ATTACK),
+            p->GetWeaponDamageRange(BASE_ATTACK, MINDAMAGE), p->GetWeaponDamageRange(BASE_ATTACK, MAXDAMAGE), p->GetBaseAttackTime(BASE_ATTACK),
+            victim ? Trinity::StringFormat("{} lvl {} hp {}/{} armor {} dmg {:.0f}-{:.0f}", victim->GetName(), victim->GetLevel(), victim->GetHealth(), victim->GetMaxHealth(),
+                victim->GetArmor(), victim->GetWeaponDamageRange(BASE_ATTACK, MINDAMAGE), victim->GetWeaponDamageRange(BASE_ATTACK, MAXDAMAGE)) : std::string("-"),
+            items.empty() ? std::string(" | NO GEAR") : " | gear" + items));
+    }
+    return lines;
 }
 
 std::vector<std::string> ForeverBotMgr::DescribeTelemetry()

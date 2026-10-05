@@ -150,6 +150,12 @@ public:
                 handler->SendSysMessage(line);
             return true;
         }
+        if (action == "stats")
+        {
+            for (std::string const& line : sForeverBotMgr->DescribeStats())
+                handler->SendSysMessage(line);
+            return true;
+        }
         if (action != "party" || words.size() < 2)
         {
             handler->SendSysMessage("Usage: .bottest party rfc [level] | party tele <name> [level] [alliance] | stop | report");

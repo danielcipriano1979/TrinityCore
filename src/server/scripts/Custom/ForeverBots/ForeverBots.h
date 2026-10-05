@@ -123,6 +123,7 @@ public:
 
     std::vector<std::string> DescribeBots();             // one line per bot, for .botinfo
     std::vector<std::string> DescribeTelemetry();        // one line per bot: role, state, decision, counters
+    std::vector<std::string> DescribeStats();            // one line per bot: health, armor, stats, attack power, weapon, gear
     std::vector<ForeverBot*> GetBotsOf(ObjectGuid owner);
     ForeverBot* GetBot(ObjectGuid guid);
     bool IsBot(ObjectGuid guid) const { return _bots.contains(guid); }
@@ -158,6 +159,7 @@ private:
     void LearnClassSpells(Player* bot);
     void AutoGear(Player* bot, BotRole role);
     void SpendTalents(Player* bot, BotRole role);
+    void MaxCombatSkills(Player* bot);
     void Teleport(ForeverBot& bot, Player* botPlayer, Player* owner);
     void Relog(ForeverBot& bot, Player* owner);
     void Logout(ForeverBot& bot);
