@@ -739,7 +739,7 @@ void ForeverBotMgr::AutoGear(Player* bot, BotRole role)
         uint32 const subClass = proto.GetSubClass();
         switch (proto.GetInventoryType())
         {
-            case INVTYPE_HEAD:      consider(EQUIPMENT_SLOT_HEAD, proto); break;
+            case INVTYPE_HEAD:      break;      // Forever: no helmets for now, a helmet is the suspect of a client crash when gear is drawn (Forever.VisibleItemAppearance)
             case INVTYPE_NECK:      consider(EQUIPMENT_SLOT_NECK, proto); break;
             case INVTYPE_SHOULDERS: consider(EQUIPMENT_SLOT_SHOULDERS, proto); break;
             case INVTYPE_CHEST:

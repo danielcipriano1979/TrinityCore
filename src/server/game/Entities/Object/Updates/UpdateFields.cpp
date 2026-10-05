@@ -20,6 +20,7 @@
 #include "ByteBuffer.h"
 #include "CharacterCache.h"
 #include "ClassicOpcodes.h"
+#include "Config.h"
 #include "Corpse.h"
 #include "DynamicObject.h"
 #include "PacketOperators.h"
@@ -854,12 +855,26 @@ bool UnitChannel::operator==(UnitChannel const& right) const
         && Duration == right.Duration;
 }
 
+// Forever: the Classic 1.60 VisibleItem has an int32 after ConditionalItemAppearanceID that the client draws other players'
+// gear with (0 = naked). Sending the appearance there made gear show, but crashed a client once ("Invalid Option ID 0"),
+// so it is switchable: Forever.VisibleItemAppearance = 1 in worldserver.conf (default 0, the old behavior).
+static bool ClassicVisibleAppearanceEnabled()
+{
+    static bool const enabled = sConfigMgr->GetIntDefault("Forever.VisibleItemAppearance", 0) != 0;
+    return enabled;
+}
+
+static int32 ClassicVisibleAppearance(uint32 itemModifiedAppearanceId)
+{
+    return ClassicVisibleAppearanceEnabled() ? int32(itemModifiedAppearanceId) : 0;
+}
+
 void VisibleItem::WriteCreate(ByteBuffer& data, Player const* receiver, Unit const* owner) const
 {
     data << int32(ItemID);
     data << int32(SecondaryItemModifiedAppearanceID);
     data << int32(ConditionalItemAppearanceID);
-    data << int32(0);                           // Classic 1.60.1.70009: unknown int32 (client VisibleItem create reader rva 0xAD8850, +0xC)
+    data << int32(ClassicVisibleAppearance(ItemModifiedAppearanceID)); // Classic 1.60.1.70009: int32 at +0xC (client VisibleItem create reader rva 0xAD8850), the appearance the client draws other players with
     data << uint16(ItemAppearanceModID);
     data << uint16(ItemVisual);
     data << uint32(ItemModifiedAppearanceID);
@@ -879,7 +894,7 @@ void VisibleItem::WriteUpdate(bool ignoreChangesMask, ByteBuffer& data, Player c
     // Classic 1.60.1.70009: 12 bits, bit 6 = unknown int32 after ConditionalItemAppearanceID (client update reader rva 0xAD8970)
     uint32 block = changesMask.GetBlock(0);
     uint32 classicBlock = (block & 0x3F) | ((block & ~0x3Fu) << 1);
-    if (ignoreChangesMask)
+    if (ignoreChangesMask || (changesMask[8] && ClassicVisibleAppearanceEnabled()))
         classicBlock |= 1u << 6;
     data.WriteBits(classicBlock, 12);
 
@@ -909,9 +924,9 @@ void VisibleItem::WriteUpdate(bool ignoreChangesMask, ByteBuffer& data, Player c
         {
             data << int32(ConditionalItemAppearanceID);
         }
-        if (ignoreChangesMask)
+        if (ignoreChangesMask || (changesMask[8] && ClassicVisibleAppearanceEnabled()))
         {
-            data << int32(0);
+            data << int32(ClassicVisibleAppearance(ItemModifiedAppearanceID));
         }
         if (changesMask[6])
         {
