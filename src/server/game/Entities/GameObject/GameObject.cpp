@@ -22,6 +22,7 @@
 #include "Battleground.h"
 #include "BattlegroundPackets.h"
 #include "CellImpl.h"
+#include "Config.h"
 #include "Containers.h"
 #include "CreatureAISelector.h"
 #include "DB2Stores.h"
@@ -62,6 +63,13 @@
 #include <G3D/CoordinateFrame.h>
 #include <G3D/Quat.h>
 #include <sstream>
+
+// Forever: automatic fishing switch, Forever.AutoFishing in worldserver.conf (default 0)
+static bool IsForeverAutoFishing()
+{
+    static bool const enabled = sConfigMgr->GetIntDefault("Forever.AutoFishing", 0) != 0;
+    return enabled;
+}
 
 void GameObjectTemplate::InitializeQueryData()
 {
@@ -1382,6 +1390,10 @@ void GameObject::Update(uint32 diff)
                             SendCustomAnim(0);
 
                         m_lootState = GO_READY;                 // can be successfully open with some chance
+
+                        // Forever: automatic fishing, the server hooks the fish for the player (see Use)
+                        if (caster && caster->GetTypeId() == TYPEID_PLAYER && IsForeverAutoFishing())
+                            Use(caster);
                     }
                     return;
                 }
@@ -3006,6 +3018,31 @@ void GameObject::Use(Unit* user, bool ignoreCastInProgress /*= false*/)
             {
                 case GO_READY:                              // ready for loot
                 {
+                    // Forever: automatic fishing (Forever.AutoFishing = 1). The catch goes straight to the bags and the
+                    // player casts Fishing again by itself, until it moves, fights, casts something else or the bags are
+                    // full (then the normal loot window opens). Pools keep their loot window.
+                    uint32 fishingSpellId = GetSpellId();
+                    auto giveFishLoot = [&]
+                    {
+                        if (!IsForeverAutoFishing() || !player->GetFreeInventorySlotCount())
+                        {
+                            player->SendLoot(*m_loot);
+                            return;
+                        }
+
+                        m_loot->AutoStore(player, NULL_BAG, NULL_SLOT, true);
+                        SetLootState(GO_JUST_DEACTIVATED);
+                        if (!fishingSpellId)
+                            return;
+
+                        player->m_Events.AddEventAtOffset([player, fishingSpellId, spot = player->GetPosition()]
+                        {
+                            if (player->IsInWorld() && player->IsAlive() && !player->IsInCombat() && !player->isMoving()
+                                && !player->IsNonMeleeSpellCast(false) && player->GetExactDist(&spot) < 0.5f)
+                                player->CastSpell(player, fishingSpellId);
+                        }, 1500ms);
+                    };
+
                     SetLootState(GO_ACTIVATED, player);
 
                     SetGoState(GO_STATE_ACTIVE);
@@ -3064,13 +3101,23 @@ void GameObject::Use(Unit* user, bool ignoreCastInProgress /*= false*/)
                         else
                         {
                             m_loot.reset(GetFishLoot(player));
-                            player->SendLoot(*m_loot);
+                            giveFishLoot();
                         }
                     }
                     else // vanilla: the fish escaped
                     {
                         SetLootState(GO_JUST_DEACTIVATED);
                         player->SendDirectMessage(WorldPackets::GameObject::FishEscaped().Write());
+                        // Forever: automatic fishing casts again after a fish that got away
+                        if (IsForeverAutoFishing() && fishingSpellId)
+                        {
+                            player->m_Events.AddEventAtOffset([player, fishingSpellId, spot = player->GetPosition()]
+                            {
+                                if (player->IsInWorld() && player->IsAlive() && !player->IsInCombat() && !player->isMoving()
+                                    && !player->IsNonMeleeSpellCast(false) && player->GetExactDist(&spot) < 0.5f)
+                                    player->CastSpell(player, fishingSpellId);
+                            }, 1500ms);
+                        }
                     }
                     break;
                 }
