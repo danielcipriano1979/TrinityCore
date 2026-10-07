@@ -149,6 +149,7 @@ void ForeverBotAI::UpdateAI(uint32 diff)
             _spells.Build(me);
         _slowTimer = 0;
         EnsureAmmo();
+        SnapToGround();
         ctx.Party->Prune(ctx.Now);
         std::erase_if(_unreachable, [&](auto const& entry) { return entry.second <= ctx.Now; });
         std::erase_if(_blockedSpells, [&](auto const& entry) { return entry.second <= ctx.Now; });
@@ -255,8 +256,11 @@ void ForeverBotAI::Decide(BotContext& ctx, uint32 elapsed)
     size_t const proposals = _brain.Size();
     ForeverBots::Candidate const* done = _brain.Execute();
 
-    // movement runs beside the decisions (not while casting)
-    if (inCombat || target)
+    // movement runs beside the decisions (not while casting, and not over the step back onto the floor)
+    bool const snapping = ctx.Now < _snapUntil;
+    if (snapping)
+        _state = inCombat ? BotState::Combat : BotState::Idle;
+    else if (inCombat || target)
         MoveInCombat(ctx, target);
     else
     {

@@ -319,9 +319,28 @@ void ForeverBotAI::ProposeClassRotation(BotContext& ctx, Unit* target, int32 off
         case CLASS_HUNTER:
         {
             // auto shot runs on its own timer: start it, don't queue it
-            if (!inMelee && !me->GetCurrentSpell(CURRENT_AUTOREPEAT_SPELL))
-                if (BotSpell const* autoShot = _spells.Find("Auto Shot"); autoShot && CanCast(autoShot, target))
-                    Cast(autoShot, target);
+            // By id, with the refusal logged: in the bot-only Wailing Caverns test the hunters used their stings and shots
+            // but Auto Shot never started (no attempt and no refusal in the log), and it is most of their own damage.
+            if (!inMelee && !me->GetCurrentSpell(CURRENT_AUTOREPEAT_SPELL) && !me->HasUnitState(UNIT_STATE_CASTING) && !me->isMoving())
+            {
+                static constexpr uint32 SpellAutoShot = 75;
+                if (!me->HasSpell(SpellAutoShot) && sSpellMgr->GetSpellInfo(SpellAutoShot, DIFFICULTY_NONE))
+                    me->LearnSpell(SpellAutoShot, false);
+                uint32 const now = GameTime::GetGameTimeMS();
+                if (me->HasSpell(SpellAutoShot) && now >= _autoShotRetry)
+                {
+                    if (!me->HasInArc(float(M_PI) / 2, target))
+                        me->SetFacingToObject(target);
+                    SpellCastResult const result = me->CastSpell(target, SpellAutoShot, false);
+                    if (result != SPELL_CAST_OK)
+                    {
+                        _autoShotRetry = now + 1500;
+                        if (ctx.Data->Debug || sForeverBotMgr->IsGlobalDebug())
+                            TC_LOG_INFO("server.foreverbots", "[BotAI] Bot={} Auto Shot on {} refused: {} (dist {:.1f})", me->GetName(), target->GetName(),
+                                uint32(result), me->GetDistance(target));
+                    }
+                }
+            }
             if (inMelee)
             {
                 ProposeNamed(R(18), "Mongoose Bite", target, "melee proc");

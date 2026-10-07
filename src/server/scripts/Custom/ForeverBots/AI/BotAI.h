@@ -256,6 +256,7 @@ private:
     bool IsChasing(Unit* target) const;
     void ChaseTarget(Unit* target, float minRange, float maxRange, Optional<float> angle);
     void CheckStuck(Unit* target, float wantedRange, uint32 elapsed);
+    void SnapToGround();                                    // a bot standing above or under the floor (straight moves in caves)
     void Wander(ForeverBot const& data, uint32 elapsed);
     void Rest(BotContext& ctx, uint32 elapsed);
 
@@ -279,6 +280,8 @@ private:
     Optional<float> _chaseAngle;
     uint32 _healBlockedLog = 0;                             // debug: next "can't heal" log
     uint32 _petRetry = 0;                                   // next try to get the hunter's pet
+    uint32 _autoShotRetry = 0;                              // next Auto Shot start after a refusal
+    uint32 _snapUntil = 0;                                  // stepping back onto the floor: no other movement until then
 
     // stuck detection
     ObjectGuid _stuckTarget;

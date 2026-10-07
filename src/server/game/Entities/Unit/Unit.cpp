@@ -2312,7 +2312,11 @@ void Unit::AttackerStateUpdate(Unit* victim, WeaponAttackType attType, bool extr
 
     // Forever: M2 doodads are ignored like spells do (Spell::CheckCast): with them, swings of players and bots were dropped
     // at melee range among the plants of Wailing Caverns ("no line of sight" at 0.5 yd) while spells went through
-    if ((attType == BASE_ATTACK || attType == OFF_ATTACK) && !IsWithinLOSInMap(victim, LINEOFSIGHT_ALL_CHECKS, VMAP::ModelIgnoreFlags::M2))
+    // ...and a swing is not dropped for line of sight when the two are touching (2 yd between the hit boxes): the check still
+    // failed there for bots and creatures standing on the uneven floor of the caves (0.5 yd, normal models), and nothing but
+    // the floor can be between them at that distance.
+    if ((attType == BASE_ATTACK || attType == OFF_ATTACK) && GetDistance(victim) > 2.0f
+        && !IsWithinLOSInMap(victim, LINEOFSIGHT_ALL_CHECKS, VMAP::ModelIgnoreFlags::M2))
         return dropped("no line of sight");
 
     AtTargetAttacked(victim, true);

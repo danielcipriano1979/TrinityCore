@@ -62,7 +62,9 @@ bool ForeverBotAI::CanCast(BotSpell const* spell, Unit* target, bool checkRange 
 {
     if (!spell || !spell->Info || !target)
         return false;
-    if (me->HasUnitState(UNIT_STATE_CASTING) || me->IsNonMeleeSpellCast(false))
+    // an auto-repeat spell running (Auto Shot, the wand) is not a cast in progress: counted as one, a hunter with Auto Shot
+    // on used nothing else and a healer wanding stopped healing
+    if (me->HasUnitState(UNIT_STATE_CASTING) || me->IsNonMeleeSpellCast(false, false, true))
         return false;
     if (IsSpellBlocked(spell->Info->Id, GameTime::GetGameTimeMS()))
         return false;

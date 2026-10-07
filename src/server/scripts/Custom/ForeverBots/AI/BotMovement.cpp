@@ -13,6 +13,8 @@
 #include "GameTime.h"
 #include "GridNotifiers.h"
 #include "GridNotifiersImpl.h"
+#include "Log.h"
+#include "Map.h"
 #include "MotionMaster.h"
 #include "ObjectAccessor.h"
 #include "PathGenerator.h"
@@ -56,6 +58,27 @@ void ForeverBotAI::ChaseTarget(Unit* target, float minRange, float maxRange, Opt
     if (angle)
         chaseAngle.emplace(*angle);
     motion->MoveChase(target, range, chaseAngle);
+}
+
+// Bots move in straight lines (the 1.60 client crashes on server-driven multi-point paths), so on the uneven floor of a
+// cave they can stop above or under the ground. From there line of sight fails at point blank: in the bot-only Wailing
+// Caverns test the healer had 457 casts refused on a member 0.2 yd away that stood 3 yd higher. A bot that stands still
+// off the floor steps onto it.
+void ForeverBotAI::SnapToGround()
+{
+    if (me->isMoving() || me->IsFalling() || me->IsInWater() || me->IsFlying() || me->HasUnitState(UNIT_STATE_CASTING) || me->GetTransport())
+        return;
+
+    float const x = me->GetPositionX(), y = me->GetPositionY(), z = me->GetPositionZ();
+    float const ground = me->GetMap()->GetHeight(me->GetPhaseShift(), x, y, z + 5.0f, true, 20.0f);
+    if (ground <= INVALID_HEIGHT || std::fabs(ground - z) < 1.0f)
+        return;
+
+    if (ForeverBot* data = GetBotData(); data && (data->Debug || sForeverBotMgr->IsGlobalDebug()))
+        TC_LOG_INFO("server.foreverbots", "[BotAI] Bot={} off the floor: z {:.1f}, ground {:.1f} -> stepping onto it", me->GetName(), z, ground);
+    _snapUntil = GameTime::GetGameTimeMS() + 1200;
+    me->GetMotionMaster()->Clear();
+    me->GetMotionMaster()->MovePoint(1, x, y, ground + 0.1f);
 }
 
 void ForeverBotAI::CheckStuck(Unit* target, float wantedRange, uint32 elapsed)
