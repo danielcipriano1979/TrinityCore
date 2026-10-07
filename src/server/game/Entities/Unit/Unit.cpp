@@ -14915,7 +14915,7 @@ float Unit::GetCollisionHeight() const
                 CreatureDisplayInfoEntry const* displayInfo = sCreatureDisplayInfoStore.AssertEntry(GetNativeDisplayId());
                 CreatureModelDataEntry const* modelData = sCreatureModelDataStore.AssertEntry(displayInfo->ModelID);
                 float const collisionHeight = scaleMod * ((mountModelData->MountHeight * mountDisplayInfo->CreatureModelScale) + (modelData->CollisionHeight * modelData->ModelScale * displayInfo->CreatureModelScale * 0.5f));
-                return collisionHeight == 0.0f ? DEFAULT_COLLISION_HEIGHT : collisionHeight;
+                return (collisionHeight <= 0.0f || collisionHeight > 100.0f) ? DEFAULT_COLLISION_HEIGHT : collisionHeight;
             }
         }
     }
@@ -14924,8 +14924,11 @@ float Unit::GetCollisionHeight() const
     CreatureDisplayInfoEntry const* displayInfo = sCreatureDisplayInfoStore.AssertEntry(GetNativeDisplayId());
     CreatureModelDataEntry const* modelData = sCreatureModelDataStore.AssertEntry(displayInfo->ModelID);
 
+    // Forever: the Classic 1.60 client data has models without a collision box, marked with -20000000 (CreatureModelData 34,
+    // the raptor of the Deviate Guardian / Ravager). Taken as a height, their line of sight point was 20000 km under the floor:
+    // nobody could hit them or cast on them ("no line of sight" at 0 yd). Anything that is not a sane height is the default.
     float const collisionHeight = scaleMod * modelData->CollisionHeight * modelData->ModelScale * displayInfo->CreatureModelScale;
-    return collisionHeight == 0.0f ? DEFAULT_COLLISION_HEIGHT : collisionHeight;
+    return (collisionHeight <= 0.0f || collisionHeight > 100.0f) ? DEFAULT_COLLISION_HEIGHT : collisionHeight;
 }
 
 void Unit::AddWorldEffect(int32 worldEffectId)

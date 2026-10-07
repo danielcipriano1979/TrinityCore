@@ -218,6 +218,7 @@ private:
     bool HasAuraFrom(Unit const* target, BotSpell const* spell, bool mine) const;
     void EnsureAttacking(Unit* target, bool melee);
     void EnsureAmmo();                                      // arrows or bullets for a bow, crossbow or gun
+    void EnsureHunterPet();                                 // call, revive or create the hunter's pet
     bool IsSpellBlocked(uint32 spellId, uint32 now) const;
 
     // combat (BotCombat.cpp)
@@ -277,6 +278,7 @@ private:
     float _chaseMax = -1.0f;
     Optional<float> _chaseAngle;
     uint32 _healBlockedLog = 0;                             // debug: next "can't heal" log
+    uint32 _petRetry = 0;                                   // next try to get the hunter's pet
 
     // stuck detection
     ObjectGuid _stuckTarget;

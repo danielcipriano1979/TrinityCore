@@ -8,11 +8,15 @@
  */
 
 #include "BotAI.h"
+#include "GameTime.h"
 #include "Item.h"
+#include "Log.h"
+#include "Map.h"
 #include "Pet.h"
 #include "Player.h"
 #include "Spell.h"
 #include "SpellInfo.h"
+#include "SpellMgr.h"
 #include "StringFormat.h"
 
 using namespace ForeverBots;
@@ -49,6 +53,47 @@ float ForeverBotAI::PreferredRange() const
     if (IsRangedClass())
         return 30.0f;
     return IsCasterClass() ? 28.0f : 0.0f;
+}
+
+// A hunter bot without a pet: calls the one it has (Call Pet), revives it when it died and its body is gone, or gets a
+// wolf of its own level the first time, the way ".pet create" does (nobody tames a beast for a bot).
+void ForeverBotAI::EnsureHunterPet()
+{
+    uint32 const now = GameTime::GetGameTimeMS();
+    if (now < _petRetry)
+        return;
+    _petRetry = now + 8000;
+
+    // the taming quest chain teaches these; a bot never did it
+    if (!me->HasSpell(883) || !me->HasSpell(982))
+    {
+        for (uint32 spellId : { 883u, 982u })       // Call Pet, Revive Pet
+            if (!me->HasSpell(spellId) && sSpellMgr->GetSpellInfo(spellId, DIFFICULTY_NONE))
+                me->LearnSpell(spellId, false);
+        _petRetry = now + 3000;                     // the spell book picks them up on its next rebuild
+    }
+
+    if (PetStable const* stable = me->GetPetStable(); stable && stable->GetCurrentPet())
+    {
+        // a pet in the stable: alive -> Call Pet, dead -> Revive Pet (whichever the server accepts)
+        if (BotSpell const* call = _spells.Find("Call Pet"); call && Cast(call, me))
+            return;
+        if (BotSpell const* revive = _spells.Find("Revive Pet"))
+            Cast(revive, me);
+        return;
+    }
+
+    static constexpr uint32 PetEntry = 2958;        // Prairie Wolf: a wolf (bite), tameable in every Classic data set
+    Pet* pet = me->CreateTamedPetFrom(PetEntry, 13481);
+    if (!pet)
+        return;
+    pet->GetMap()->AddToMap(pet->ToCreature());
+    me->SetMinion(pet, true);
+    if (pet->HasHappiness())
+        pet->SetPower(POWER_HAPPINESS, Pet::HAPPINESS_MAX);
+    pet->SavePetToDB(PET_SAVE_AS_CURRENT);
+    me->PetSpellInitialize();
+    TC_LOG_INFO("server.foreverbots", "ForeverBots: {} (hunter, level {}) got a pet", me->GetName(), me->GetLevel());
 }
 
 bool ForeverBotAI::ProposeNamed(int32 relevance, char const* name, Unit* target, char const* reason)
@@ -121,6 +166,24 @@ void ForeverBotAI::ProposeClassUpkeep(BotContext& ctx, Unit* target, bool inComb
                 keepOne(R_BUFF + 2, { "Aspect of the Hawk", "Aspect of the Monkey" }, "aspect");
             else if (_spells.Find("Aspect of the Hawk") && HasAuraNamed(me, "Aspect of the Monkey", true))
                 keepOne(R_BUFF + 2, { "Aspect of the Hawk" }, "better aspect");
+            // the pet is most of a hunter's damage (LegionMind lesson: "all the ranged are weak" was hunters without a pet)
+            if (Pet* pet = me->GetPet())
+            {
+                if (!pet->IsAlive())
+                {
+                    if (!inCombat && !me->isMoving())
+                        ProposeNamed(R_BUFF + 4, "Revive Pet", me, "pet dead");
+                }
+                else
+                {
+                    if (pet->HasHappiness() && pet->GetPower(POWER_HAPPINESS) < Pet::HAPPINESS_MAX)
+                        pet->SetPower(POWER_HAPPINESS, Pet::HAPPINESS_MAX);     // nobody feeds a bot's pet
+                    if (pet->GetHealthPct() < 50.0f && !HasAuraNamed(pet, "Mend Pet", true))
+                        ProposeNamed(inCombat ? R_ROTATION + 15 : R_BUFF + 3, "Mend Pet", pet, "pet hurt");
+                }
+            }
+            else if (!inCombat && !me->isMoving() && !me->IsMounted())
+                EnsureHunterPet();
             break;
         case CLASS_PRIEST:
             if (role == BotRole::Dps && _spells.Find("Shadowform"))
@@ -159,7 +222,9 @@ void ForeverBotAI::ProposeClassUpkeep(BotContext& ctx, Unit* target, bool inComb
             // a demon: the Voidwalker when nobody tanks, otherwise the Imp
             if (!inCombat && !me->GetPet() && !me->isMoving())
             {
-                char const* demon = !ctx.Tank ? firstKnown({ "Summon Voidwalker", "Summon Imp" }) : firstKnown({ "Summon Imp" });
+                // the Voidwalker costs a Soul Shard (6265): without one the cast is refused for reagents, the Imp is free
+                bool const shard = me->HasItemCount(6265);
+                char const* demon = !ctx.Tank && shard ? firstKnown({ "Summon Voidwalker", "Summon Imp" }) : firstKnown({ "Summon Imp" });
                 if (demon)
                     ProposeNamed(R_BUFF + 3, demon, me, "no demon");
             }
