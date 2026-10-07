@@ -22,7 +22,7 @@ using namespace ForeverBots;
 namespace
 {
     constexpr float HealRange = 38.0f;
-    constexpr uint32 TankOpenerTime = 1500;         // DPS give the tank that long on a fresh mob
+    constexpr uint32 TankOpenerTime = 3000;         // DPS give the tank that long on a fresh mob
     constexpr float ThreatHoldPct = 90.0f;
 
     // mechanics that make a debuff worth dispelling first
@@ -342,7 +342,9 @@ void ForeverBotAI::ProposeDps(BotContext& ctx, Unit* target, int32 relevanceOffs
         Unit* victim = target->GetVictim();
         auto engaged = ctx.Party->EngagedAt.find(target->GetGUID());
         bool const fresh = engaged != ctx.Party->EngagedAt.end() && ctx.Now - engaged->second < TankOpenerTime;
-        if (fresh && victim == ctx.Tank)
+        // ...whoever it is running at: hitting a fresh mob that is not on the tank yet is what puts it on a damage dealer
+        // for good. Only the one it is already beating on defends itself, and nobody waits for a tank that is far away.
+        if (fresh && victim != me && me->IsWithinDistInMap(ctx.Tank, 40.0f))
         {
             _brain.Propose(R_ROTATION + 25, "WAIT_TANK", target, []() { return true; }, "tank opener");
             return;

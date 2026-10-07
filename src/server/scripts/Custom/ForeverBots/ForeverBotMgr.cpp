@@ -544,11 +544,40 @@ void ForeverBotMgr::LoadClassicSpells()
         trainer, _trainerSpells.size(), _talentSpells.size(), _starterSpells.size());
 }
 
+namespace
+{
+    // the spells a Classic character gets from its class quests (a bot doesn't do them). The tank ones matter most: the
+    // warrior's Defensive Stance quest also teaches Taunt and Sunder Armor, the druid's Bear Form quest Growl and Maul;
+    // without Taunt and Growl a tank bot never taunted (0 taunts in every test run) and mobs stayed on the damage dealers.
+    struct ClassQuestSpell { uint8 ClassId; uint8 Level; uint32 SpellId; };
+    ClassQuestSpell const ClassQuestSpells[] =
+    {
+        { CLASS_WARRIOR, 10, 71 },      // Defensive Stance
+        { CLASS_WARRIOR, 10, 355 },     // Taunt
+        { CLASS_WARRIOR, 30, 2458 },    // Berserker Stance
+        { CLASS_DRUID,   10, 5487 },    // Bear Form
+        { CLASS_DRUID,   10, 6795 },    // Growl
+        { CLASS_SHAMAN,   4, 8071 },    // Stoneskin Totem
+        { CLASS_SHAMAN,  10, 3599 },    // Searing Totem
+        { CLASS_SHAMAN,  20, 5394 },    // Healing Stream Totem
+        { CLASS_WARLOCK,  1, 688 },     // Summon Imp
+        { CLASS_WARLOCK, 10, 697 },     // Summon Voidwalker
+        { CLASS_WARLOCK, 20, 712 },     // Summon Succubus
+        { CLASS_WARLOCK, 30, 691 },     // Summon Felhunter
+        { CLASS_PALADIN, 12, 7328 },    // Redemption
+        { CLASS_HUNTER,  10, 883 },     // Call Pet
+        { CLASS_HUNTER,  10, 982 },     // Revive Pet
+    };
+}
+
 bool ForeverBotMgr::IsClassicSpell(uint8 classId, SpellInfo const* spellInfo) const
 {
     auto family = _classBySpellFamily.find(spellInfo->SpellFamilyName);
     if (family == _classBySpellFamily.end() || family->second != classId)
         return true;            // not a class spell: racials, weapon skills, wand, generic spells
+    for (ClassQuestSpell const& quest : ClassQuestSpells)
+        if (quest.ClassId == classId && quest.SpellId == spellInfo->Id)
+            return true;
     auto trainer = _trainerSpells.find(classId);
     if (trainer != _trainerSpells.end() && trainer->second.contains(spellInfo->Id))
         return true;
@@ -585,23 +614,7 @@ void ForeverBotMgr::LearnClassSpells(Player* bot)
         LoadClassicSpells();
     RemoveNonClassicSpells(bot);
 
-    // the spells a Classic character gets from its class quests (a bot doesn't do them)
-    struct QuestSpell { uint8 ClassId; uint8 Level; uint32 SpellId; };
-    static QuestSpell const QuestSpells[] =
-    {
-        { CLASS_WARRIOR, 10, 71 },      // Defensive Stance
-        { CLASS_WARRIOR, 30, 2458 },    // Berserker Stance
-        { CLASS_DRUID,   10, 5487 },    // Bear Form
-        { CLASS_SHAMAN,   4, 8071 },    // Stoneskin Totem
-        { CLASS_SHAMAN,  10, 3599 },    // Searing Totem
-        { CLASS_SHAMAN,  20, 5394 },    // Healing Stream Totem
-        { CLASS_WARLOCK,  1, 688 },     // Summon Imp
-        { CLASS_WARLOCK, 10, 697 },     // Summon Voidwalker
-        { CLASS_WARLOCK, 20, 712 },     // Summon Succubus
-        { CLASS_WARLOCK, 30, 691 },     // Summon Felhunter
-        { CLASS_PALADIN, 12, 7328 },    // Redemption
-    };
-    for (QuestSpell const& quest : QuestSpells)
+    for (ClassQuestSpell const& quest : ClassQuestSpells)
         if (quest.ClassId == bot->GetClass() && quest.Level <= bot->GetLevel() && !bot->HasSpell(quest.SpellId))
             if (sSpellMgr->GetSpellInfo(quest.SpellId, DIFFICULTY_NONE))
                 bot->LearnSpell(quest.SpellId, false, 0, true);
