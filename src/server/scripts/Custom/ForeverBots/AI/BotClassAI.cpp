@@ -8,6 +8,7 @@
  */
 
 #include "BotAI.h"
+#include "CharmInfo.h"
 #include "GameTime.h"
 #include "Item.h"
 #include "Log.h"
@@ -73,7 +74,11 @@ void ForeverBotAI::EnsureHunterPet()
         _petRetry = now + 3000;                     // the spell book picks them up on its next rebuild
     }
 
-    if (PetStable const* stable = me->GetPetStable(); stable && stable->GetCurrentPet())
+    // any pet in the active slots counts, not only the "current" one: that is unset until the pet is called, and a bot
+    // that relogged got another wolf every time (5 on one hunter)
+    PetStable const* stable = me->GetPetStable();
+    bool const hasPet = stable && (stable->GetCurrentPet() || std::ranges::any_of(stable->ActivePets, [](Optional<PetStable::PetInfo> const& pet) { return pet.has_value(); }));
+    if (hasPet)
     {
         // a pet in the stable: alive -> Call Pet, dead -> Revive Pet (whichever the server accepts)
         if (BotSpell const* call = _spells.Find("Call Pet"); call && Cast(call, me))
@@ -89,6 +94,7 @@ void ForeverBotAI::EnsureHunterPet()
         return;
     pet->GetMap()->AddToMap(pet->ToCreature());
     me->SetMinion(pet, true);
+    pet->SetReactState(REACT_DEFENSIVE);            // a created pet starts passive and would only watch
     if (pet->HasHappiness())
         pet->SetPower(POWER_HAPPINESS, Pet::HAPPINESS_MAX);
     pet->SavePetToDB(PET_SAVE_AS_CURRENT);
@@ -244,8 +250,26 @@ void ForeverBotAI::ProposeClassUpkeep(BotContext& ctx, Unit* target, bool inComb
 
     // the pet attacks what I attack
     if (inCombat && target)
-        if (Pet* pet = me->GetPet(); pet && pet->IsAlive() && pet->GetVictim() != target && pet->IsAIEnabled())
+        if (Pet* pet = me->GetPet(); pet && pet->IsAlive() && pet->GetVictim() != target && pet->IsAIEnabled() && me->IsValidAttackTarget(target))
+        {
+            // the way the client's attack command does it (PetHandler COMMAND_ATTACK; LegionMind ComandarPet): without the
+            // command flags a pet that is following, staying or returning ignores AttackStart and stands by its hunter.
+            // Guarded by the victim only: PetAI clears the command flag in its own update.
+            pet->ClearUnitState(UNIT_STATE_FOLLOW);
+            if (pet->GetVictim())
+                pet->AttackStop();
+            if (CharmInfo* charmInfo = pet->GetCharmInfo())
+            {
+                if (pet->GetReactState() == REACT_PASSIVE)
+                    pet->SetReactState(REACT_DEFENSIVE);
+                charmInfo->SetIsCommandAttack(true);
+                charmInfo->SetIsAtStay(false);
+                charmInfo->SetIsFollowing(false);
+                charmInfo->SetIsCommandFollow(false);
+                charmInfo->SetIsReturning(false);
+            }
             pet->AI()->AttackStart(target);
+        }
 }
 
 // ---------------------------------------------------------------------------------------------------------------------
