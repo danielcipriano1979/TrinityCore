@@ -17,6 +17,7 @@
 
 #include "MoveSplineInit.h"
 #include "Creature.h"
+#include "MotionMaster.h"
 #include "MoveSpline.h"
 #include "MovementPackets.h"
 #include "PathGenerator.h"
@@ -112,6 +113,28 @@ namespace Movement
 
         // correct first vertex
         args.path[0] = real_position;
+
+        // Forever: the 1.60 client crashes with FLT_DIVIDE_BY_ZERO (its floating point exceptions are on) on a path with a
+        // zero length segment. The points between the first and the last travel as packed offsets (0.25 yd steps), so two
+        // navmesh points closer than that arrive as the same point. A pet following its owner relaunches its path every
+        // update: with movement maps for the dungeon (Wailing Caverns, 2026-10-07) those became short multi-point paths
+        // and a client died next to a hunter bot's pet. Follow and chase paths drop the points closer than 0.5 yd to their
+        // neighbours (waypoint paths keep theirs: their points are reported by index).
+        if (args.path.size() > 2 && !args.flags.Cyclic && !args.flags.Catmullrom)
+        {
+            MovementGeneratorType const generator = unit->GetMotionMaster()->GetCurrentMovementGeneratorType();
+            if (generator == FOLLOW_MOTION_TYPE || generator == CHASE_MOTION_TYPE)
+            {
+                PointsArray filtered;
+                filtered.reserve(args.path.size());
+                filtered.push_back(args.path.front());
+                for (std::size_t i = 1; i + 1 < args.path.size(); ++i)
+                    if ((args.path[i] - filtered.back()).length() >= 0.5f && (args.path[i] - args.path.back()).length() >= 0.5f)
+                        filtered.push_back(args.path[i]);
+                filtered.push_back(args.path.back());
+                args.path = std::move(filtered);
+            }
+        }
         args.initialOrientation = real_position.orientation;
         args.flags.Enter_Cycle = args.flags.Cyclic;
         move_spline.onTransport = transport;

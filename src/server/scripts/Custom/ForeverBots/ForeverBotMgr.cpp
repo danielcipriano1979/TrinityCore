@@ -704,6 +704,14 @@ namespace
             else if (IsPrimaryStat(stat))
                 score -= 10;                       // e.g. intellect on a warrior
         }
+        // a weapon is its damage first: by item level and stats alone a warrior and a rogue ended up with the same dagger
+        // (18-34 damage at level 22) and hit for little. Casters keep choosing by stats (their staff or wand damage is
+        // irrelevant); a slower weapon hits harder with instant strikes.
+        if (proto.GetClass() == ITEM_CLASS_WEAPON && !plan.Stats.empty() && plan.Stats.front() != MOD_INTELLECT)
+        {
+            score += int32(proto.GetDPS(proto.GetBaseItemLevel()) * 12.0f);
+            score += int32(proto.GetDelay() / 250);
+        }
         // heavier armor is better for whoever can wear it (cloaks are always cloth)
         if (proto.GetClass() == ITEM_CLASS_ARMOR && proto.GetInventoryType() != INVTYPE_CLOAK)
             score += int32(proto.GetSubClass()) * 6;
