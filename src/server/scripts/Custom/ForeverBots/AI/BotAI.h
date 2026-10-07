@@ -12,6 +12,7 @@
 #ifndef FOREVER_BOT_AI_H
 #define FOREVER_BOT_AI_H
 
+#include "ModelIgnoreFlags.h"
 #include "../ForeverBots.h"
 #include "PlayerAI.h"
 #include <functional>

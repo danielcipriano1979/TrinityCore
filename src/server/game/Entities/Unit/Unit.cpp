@@ -56,6 +56,7 @@
 #include "LootPackets.h"
 #include "MapUtils.h"
 #include "MiscPackets.h"
+#include "ModelIgnoreFlags.h"
 #include "MotionMaster.h"
 #include "MovementGenerator.h"
 #include "MovementPackets.h"
@@ -2309,7 +2310,9 @@ void Unit::AttackerStateUpdate(Unit* victim, WeaponAttackType attType, bool extr
     if (!victim->IsAlive())
         return;
 
-    if ((attType == BASE_ATTACK || attType == OFF_ATTACK) && !IsWithinLOSInMap(victim))
+    // Forever: M2 doodads are ignored like spells do (Spell::CheckCast): with them, swings of players and bots were dropped
+    // at melee range among the plants of Wailing Caverns ("no line of sight" at 0.5 yd) while spells went through
+    if ((attType == BASE_ATTACK || attType == OFF_ATTACK) && !IsWithinLOSInMap(victim, LINEOFSIGHT_ALL_CHECKS, VMAP::ModelIgnoreFlags::M2))
         return dropped("no line of sight");
 
     AtTargetAttacked(victim, true);

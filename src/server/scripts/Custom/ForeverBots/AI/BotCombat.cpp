@@ -236,7 +236,7 @@ void ForeverBotAI::ProposeHealer(BotContext& ctx, bool emergencyOnly /*= false*/
         if (effective >= 90.0f)
             continue;
         float score = effective + me->GetDistance(member) / 10.0f;
-        if (!me->IsWithinDistInMap(member, HealRange) || !me->IsWithinLOSInMap(member))
+        if (!me->IsWithinDistInMap(member, HealRange) || !me->IsWithinLOSInMap(member, LINEOFSIGHT_ALL_CHECKS, VMAP::ModelIgnoreFlags::M2))
             score += 30.0f;
         if (incoming > 0)
             score += 10.0f;
@@ -311,7 +311,7 @@ void ForeverBotAI::ProposeHealer(BotContext& ctx, bool emergencyOnly /*= false*/
     {
         _healBlockedLog = ctx.Now + 3000;
         TC_LOG_INFO("server.foreverbots", "[BotAI] Bot={} can't heal {} at {:.0f}%: dist {:.1f}, line of sight {}, casting {}, moving {}, {} heals known",
-            me->GetName(), best->GetName(), pct, me->GetDistance(best), me->IsWithinLOSInMap(best), me->HasUnitState(UNIT_STATE_CASTING),
+            me->GetName(), best->GetName(), pct, me->GetDistance(best), me->IsWithinLOSInMap(best, LINEOFSIGHT_ALL_CHECKS, VMAP::ModelIgnoreFlags::M2), me->HasUnitState(UNIT_STATE_CASTING),
             me->isMoving(), heals.size());
     }
 
@@ -564,7 +564,7 @@ namespace
             int32 const diff = int32(creature->GetLevel()) - int32(Me->GetLevel());
             if (diff < -5 || diff > 2)
                 return false;
-            return Me->IsValidAttackTarget(creature) && Me->IsWithinLOSInMap(creature);
+            return Me->IsValidAttackTarget(creature) && Me->IsWithinLOSInMap(creature, LINEOFSIGHT_ALL_CHECKS, VMAP::ModelIgnoreFlags::M2);
         }
     };
 }

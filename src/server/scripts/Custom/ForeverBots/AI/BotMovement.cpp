@@ -126,7 +126,7 @@ void ForeverBotAI::MoveInCombat(BotContext& ctx, Unit* target)
                 attackedInMelee = true;
 
         // no line of sight (a ledge, a corner): right next to the anchor, 10 to 20 yd away can still be behind the wall
-        if (!me->IsWithinLOSInMap(anchor))
+        if (!me->IsWithinLOSInMap(anchor, LINEOFSIGHT_ALL_CHECKS, VMAP::ModelIgnoreFlags::M2))
             ChaseTarget(anchor, 0.0f, 4.0f, {});
         else if (!me->IsWithinDistInMap(anchor, HealerReach))
             ChaseTarget(anchor, 10.0f, 20.0f, {});
@@ -148,7 +148,7 @@ void ForeverBotAI::MoveInCombat(BotContext& ctx, Unit* target)
     {
         float const dist = me->GetDistance(target);
         bool const serverRefusedLos = _losBlocked == target->GetGUID() && GameTime::GetGameTimeMS() < _losBlockedUntil;
-        bool const los = !serverRefusedLos && me->IsWithinLOSInMap(target);
+        bool const los = !serverRefusedLos && me->IsWithinLOSInMap(target, LINEOFSIGHT_ALL_CHECKS, VMAP::ModelIgnoreFlags::M2);
         if (serverRefusedLos)
         {
             // walk in until the server sees it too

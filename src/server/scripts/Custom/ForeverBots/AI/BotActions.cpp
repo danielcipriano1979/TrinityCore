@@ -96,7 +96,7 @@ bool ForeverBotAI::CanCast(BotSpell const* spell, Unit* target, bool checkRange 
         }
         else if (!me->IsWithinDistInMap(target, range))
             return false;
-        if (!me->IsWithinLOSInMap(target))
+        if (!me->IsWithinLOSInMap(target, LINEOFSIGHT_ALL_CHECKS, VMAP::ModelIgnoreFlags::M2))
             return false;
     }
     return true;
