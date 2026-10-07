@@ -12,6 +12,9 @@
  *   .bot debug [off]                   your bots log every decision ([BotAI] in Server.log)
  *   .bot info                          your bots: state, decision, telemetry
  *
+ * Group Finder (the game's own window, ForeverBots.GroupFinder = 1): posting a group for a dungeon takes the player into it and
+ * recruits the bots the group is missing (ForeverBotMgr::StartDungeonRun).
+ *
  * Console / GM: .botinfo, .botworld [n], .botdebug [on|off], .bottest party rfc [level] | stop | report
  *
  * The world bot count set by .bot world is kept across restarts (world_variable 'ForeverBots.WorldBots'); before
@@ -22,6 +25,7 @@
 #include "Chat.h"
 #include "ChatCommand.h"
 #include "Config.h"
+#include "GroupFinderListings.h"
 #include "Language.h"
 #include "ObjectMgr.h"
 #include "ObjectAccessor.h"
@@ -385,6 +389,11 @@ public:
         sForeverBotMgr->LoadClassicSpells();
         sForeverBotMgr->SetDebug(sConfigMgr->GetBoolDefault("ForeverBots.Debug", false));
         sForeverBotMgr->LoadWorldBotCount(uint32(sConfigMgr->GetIntDefault("ForeverBots.WorldBots", 0)));
+        if (sConfigMgr->GetBoolDefault("ForeverBots.GroupFinder", true))
+            GroupFinderListings::SetListedHook([](Player* player, std::vector<uint32> const& activities, uint8 roles)
+            {
+                return sForeverBotMgr->StartDungeonRun(player, activities, roles);
+            });
     }
 
     void OnUpdate(uint32 diff) override

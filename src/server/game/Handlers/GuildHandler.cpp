@@ -1009,6 +1009,7 @@ namespace
     std::unordered_map<ObjectGuid, LfgListing> LfgListings;
     std::unordered_map<ObjectGuid, uint8> LfgListRoles;     // roles the player ticked (Classic roles message)
     uint32 NextLfgListingId = 1;
+    GroupFinderListings::ListedHook LfgListedHook;          // Forever bots
 
     // LFGListJoinRequest: bits activity count 5, name 10, comment 11, voice chat 8, 9 flags (4 bools, has int32 x3, has uint8,
     // bool); uint32 category, float item level, {float, float, uint32 n, n x 16 bytes}, int8, n x uint32 activity ids, name,
@@ -1251,6 +1252,22 @@ void GroupFinderListings::OnLogout(Player const* player)
     LfgListings.erase(itr);
 }
 
+void GroupFinderListings::SetListedHook(ListedHook hook)
+{
+    LfgListedHook = std::move(hook);
+}
+
+void GroupFinderListings::Delist(Player* player)
+{
+    auto itr = LfgListings.find(player->GetGUID());
+    if (itr == LfgListings.end())
+        return;
+    LfgListing const listing = std::move(itr->second);
+    LfgListings.erase(itr);
+    SendLfgListStatus(player->GetSession(), listing, false);
+    LogLfgListing("delisted", player->GetGUID(), listing);
+}
+
 void WorldSession::HandleLfgListProbe(WorldPackets::Null& packet)
 {
     WorldPacket const* raw = packet.GetRawPacket();
@@ -1283,6 +1300,13 @@ void WorldSession::HandleLfgListProbe(WorldPackets::Null& packet)
                 SendPacket(&result);
                 SendLfgListStatus(this, stored, true);
                 LogLfgListing("listed", _player->GetGUID(), stored);
+                if (LfgListedHook)
+                {
+                    // copies: the hook may take the listing down
+                    std::vector<uint32> const activities = stored.Activities;
+                    auto roles = LfgListRoles.find(_player->GetGUID());
+                    LfgListedHook(_player, activities, roles != LfgListRoles.end() ? roles->second : 0);
+                }
                 break;
             }
             case CMSG_LFG_LIST_UPDATE_REQUEST:  // edit (serializer rva 0x944C00): ticket, request

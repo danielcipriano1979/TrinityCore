@@ -14,8 +14,10 @@
 #include "DatabaseEnv.h"
 #include "DB2Stores.h"
 #include "Group.h"
+#include "GroupFinderListings.h"
 #include "GroupMgr.h"
 #include "Item.h"
+#include "LFG.h"
 #include "ItemTemplate.h"
 #include "Log.h"
 #include "MotionMaster.h"
@@ -1565,8 +1567,136 @@ void ForeverBotMgr::UpdatePartyBot(ForeverBot& bot, uint32 diff, std::vector<Obj
     }
 }
 
+// ---------------------------------------------------------------------------------------------------------------------
+// Group Finder runs: the player posts a group for a dungeon in the game's own window, the bots fill it
+// ---------------------------------------------------------------------------------------------------------------------
+bool ForeverBotMgr::StartDungeonRun(Player* owner, std::vector<uint32> const& activities, uint8 roles)
+{
+    if (activities.empty() || IsBot(owner->GetGUID()))
+        return false;
+
+    // the first ticked activity that is a known dungeon (world.forever_groupfinder_dungeon, read here: it is tiny and rare)
+    std::string ids;
+    for (uint32 activity : activities)
+        ids += (ids.empty() ? "" : ",") + std::to_string(activity);
+    QueryResult result = WorldDatabase.Query(Trinity::StringFormat(
+        "SELECT ActivityID, PortLocID, Name FROM forever_groupfinder_dungeon WHERE ActivityID IN ({}) ORDER BY FIELD(ActivityID, {}) LIMIT 1", ids, ids).c_str());
+    if (!result)
+        return false;
+
+    Field* fields = result->Fetch();
+    std::string const name = fields[2].GetString();
+    WorldSafeLocsEntry const* entrance = sObjectMgr->GetWorldSafeLoc(fields[1].GetUInt32());
+    if (!entrance)
+    {
+        TC_LOG_ERROR("misc", "ForeverBots: Group Finder activity {} has no world_safe_locs {}", fields[0].GetUInt32(), fields[1].GetUInt32());
+        return false;
+    }
+
+    ChatHandler chat(owner->GetSession());
+    Group const* group = owner->GetGroup();
+    if (group && group->isRaidGroup())
+        return false;
+    if (group && group->GetLeaderGUID() != owner->GetGUID())
+    {
+        chat.SendSysMessage("ForeverBots: only the group leader can start a dungeon run.");
+        return false;
+    }
+    if (owner->IsInCombat() || !owner->IsAlive() || owner->IsInFlight())
+    {
+        chat.SendSysMessage("ForeverBots: you cannot start a dungeon run now (in combat, dead or flying). Post the group again afterwards.");
+        return false;
+    }
+
+    DungeonRun& run = _dungeonRuns[owner->GetGUID()];
+    run.MapId = entrance->Loc.GetMapId();
+    run.Roles = roles;
+    run.Timer = 0;
+    TC_LOG_INFO("misc", "ForeverBots: Group Finder run of {} to {} (map {}, roles {})", owner->GetName(), name, run.MapId, roles);
+    chat.SendSysMessage(Trinity::StringFormat("ForeverBots: {} - the group is on its way.", name));
+
+    if (owner->GetMapId() != run.MapId && !owner->TeleportTo(entrance->Loc))
+    {
+        chat.SendSysMessage("ForeverBots: could not take you into the dungeon.");
+        _dungeonRuns.erase(owner->GetGUID());
+        return false;
+    }
+    return true;
+}
+
+void ForeverBotMgr::UpdateDungeonRuns(uint32 diff)
+{
+    for (auto itr = _dungeonRuns.begin(); itr != _dungeonRuns.end();)
+    {
+        DungeonRun& run = itr->second;
+        Player* owner = ObjectAccessor::FindConnectedPlayer(itr->first);
+        run.Timer += diff;
+        if (!owner || run.Timer > 2 * MINUTE * IN_MILLISECONDS)
+        {
+            itr = _dungeonRuns.erase(itr);
+            continue;
+        }
+        // still on the loading screen
+        if (!owner->IsInWorld() || owner->IsBeingTeleported() || owner->GetMapId() != run.MapId)
+        {
+            ++itr;
+            continue;
+        }
+
+        // who is already there: the owner with the role they ticked (damage when none), their bots, other real members
+        bool hasTank = (run.Roles & lfg::PLAYER_ROLE_TANK) != 0;
+        bool hasHealer = !hasTank && (run.Roles & lfg::PLAYER_ROLE_HEALER) != 0;
+        std::set<uint8> classes = { owner->GetClass() };
+        std::vector<ForeverBot*> bots = GetBotsOf(owner->GetGUID());
+        for (ForeverBot const* bot : bots)
+        {
+            hasTank |= bot->Role == BotRole::Tank;
+            hasHealer |= bot->Role == BotRole::Heal;
+            if (CharacterCacheEntry const* info = sCharacterCache->GetCharacterCacheByGuid(bot->Guid))
+                classes.insert(info->Class);
+        }
+        size_t members = 1 + bots.size();
+        if (Group const* group = owner->GetGroup())
+            for (Group::MemberSlot const& slot : group->GetMemberSlots())
+                if (slot.guid != owner->GetGUID() && !IsBot(slot.guid))
+                    ++members;
+
+        std::vector<std::pair<uint8, BotRole>> recruits;
+        if (!hasTank)
+            recruits.emplace_back(uint8(CLASS_WARRIOR), BotRole::Tank);
+        if (!hasHealer)
+            recruits.emplace_back(uint8(CLASS_PRIEST), BotRole::Heal);
+        // damage dealers: classes the group does not have yet first
+        std::vector<uint8> damage = { CLASS_MAGE, CLASS_ROGUE, CLASS_HUNTER, CLASS_WARLOCK };
+        std::ranges::stable_partition(damage, [&](uint8 classId) { return !classes.contains(classId); });
+        for (size_t i = 0; members + recruits.size() < 5 && i < damage.size(); ++i)
+            recruits.emplace_back(damage[i], BotRole::Dps);
+
+        ChatHandler chat(owner->GetSession());
+        uint32 added = 0;
+        for (auto const& [classId, role] : recruits)
+        {
+            if (members + added >= 5)
+                break;
+            std::string const error = AddBot(owner, classId, role);
+            if (error.empty())
+                ++added;
+            else
+                chat.SendSysMessage(Trinity::StringFormat("ForeverBots: {}", error));
+        }
+        TC_LOG_INFO("misc", "ForeverBots: Group Finder run of {}: {} bots recruited ({} members before)", owner->GetName(), added, members);
+        chat.SendSysMessage(Trinity::StringFormat("ForeverBots: {} bots are joining your group.", added));
+
+        // the group is complete: take the post down
+        GroupFinderListings::Delist(owner);
+        itr = _dungeonRuns.erase(itr);
+    }
+}
+
 void ForeverBotMgr::Update(uint32 diff)
 {
+    UpdateDungeonRuns(diff);
+
     std::vector<ObjectGuid> toRemove;
 
     for (auto& [guid, bot] : _bots)

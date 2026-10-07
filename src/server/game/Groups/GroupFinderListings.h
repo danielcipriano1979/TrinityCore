@@ -19,6 +19,8 @@
 #define TRINITY_GROUP_FINDER_LISTINGS_H
 
 #include "Define.h"
+#include <functional>
+#include <vector>
 
 class Group;
 class Player;
@@ -29,6 +31,14 @@ namespace GroupFinderListings
 {
     TC_GAME_API void OnGroupChanged(Group const* group);
     TC_GAME_API void OnLogout(Player const* player);
+
+    // Forever bots (scripts/Custom/ForeverBots): called when a player posts a group in the Group Finder window, with the ticked
+    // activities (GroupFinderActivity ids) and the roles the player ticked (lfg::LfgRoles mask). Returns true when it takes the
+    // group over (fills it with bots and takes it into the dungeon).
+    using ListedHook = std::function<bool(Player* player, std::vector<uint32> const& activities, uint8 roles)>;
+    TC_GAME_API void SetListedHook(ListedHook hook);
+    // takes the player's listing down, as if they pressed "Delist"
+    TC_GAME_API void Delist(Player* player);
 }
 
 #endif

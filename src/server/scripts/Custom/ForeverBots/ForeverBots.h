@@ -140,6 +140,11 @@ public:
         std::vector<std::pair<uint8, BotRole>> const& members);
     void StopTestParties();
 
+    // Group Finder (the game's own window): the player posted a group for a dungeon. Takes them to its entrance, inside, and
+    // recruits the bots the group is missing (one tank, one healer, damage dealers up to five members). roles = what the
+    // player ticked (lfg::LfgRoles). Returns false when none of the activities is a dungeon of forever_groupfinder_dungeon.
+    bool StartDungeonRun(Player* owner, std::vector<uint32> const& activities, uint8 roles);
+
     void Update(uint32 diff);
 
 private:
@@ -167,6 +172,7 @@ private:
     void UpdatePartyBot(ForeverBot& bot, uint32 diff, std::vector<ObjectGuid>& toRemove);
     void UpdateWorldBot(ForeverBot& bot, uint32 diff, std::vector<ObjectGuid>& toRemove);
     void UpdateLeaderBot(ForeverBot& bot, uint32 diff);
+    void UpdateDungeonRuns(uint32 diff);
     ObjectGuid FindOrCreateCharacter(uint8 team, uint8 classId, uint32 accountId, WorldSession* session, std::string& error,
         CharacterDatabaseTransaction& pendingCommit);
     void BalanceWorldBots();
@@ -175,7 +181,11 @@ private:
 
     struct WorldSpot { uint16 MapId; uint8 MinLevel; uint8 MaxLevel; Position Pos; };
 
+    // a Group Finder run on its way: the owner is being teleported, the bots are recruited once they arrive
+    struct DungeonRun { uint32 MapId = 0; uint8 Roles = 0; uint32 Timer = 0; };
+
     std::unordered_map<ObjectGuid, ForeverBot> _bots;
+    std::unordered_map<ObjectGuid, DungeonRun> _dungeonRuns;
     uint32 _accountId = 0;
     uint32 _worldTarget = 0;
     uint32 _balanceTimer = 0;
