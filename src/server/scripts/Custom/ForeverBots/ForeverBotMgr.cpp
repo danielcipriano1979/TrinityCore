@@ -138,12 +138,17 @@ static std::string GenerateBotName()
 }
 
 // WorldSession::MeetsChrCustomizationReq without anything earned (achievement, appearance, quest): what any new
-// character of that race and class may pick
+// character of that race and class may pick. A requirement without the HasRequirements flag (10, 12, 4475...) marks
+// what the Classic character creator never offers (the "Eye Style" options, NPC skins and eyes): the server accepts
+// those, but the client asserts "Invalid Option ID 0" / "Invalid Choice ID 0" (ComponentUtils.cpp) on such a
+// character and draws it without its gear
 static bool IsFreeCustomizationReq(int32 reqId, uint8 race, uint8 classId)
 {
     ChrCustomizationReqEntry const* req = sChrCustomizationReqStore.LookupEntry(reqId);
-    if (!req || !req->GetFlags().HasFlag(ChrCustomizationReqFlag::HasRequirements))
+    if (!req)
         return true;
+    if (!req->GetFlags().HasFlag(ChrCustomizationReqFlag::HasRequirements))
+        return false;
     if (req->ClassMask && !(req->ClassMask & (1 << (classId - 1))))
         return false;
     if (!req->RaceMask.IsEmpty() && req->RaceMask != RACEMASK_ALL_v<int32, 2> && !req->RaceMask.HasRace(race))
@@ -315,7 +320,19 @@ void ForeverBotMgr::EnsureCustomizations(ObjectGuid guid, WorldSession* session)
             choice.ChrCustomizationChoiceID = (*rows)[1].GetUInt32();
         } while (rows->NextRow());
     }
-    if (!current.empty() && session->ValidateAppearance(Races(race), Classes(classId), Gender(sex), { current.data(), current.data() + current.size() }))
+    // ... and the Classic character creator offers it (see IsFreeCustomizationReq)
+    bool const offered = std::ranges::all_of(current, [&](UF::ChrCustomizationChoice const& choice)
+    {
+        ChrCustomizationOptionEntry const* option = sChrCustomizationOptionStore.LookupEntry(choice.ChrCustomizationOptionID);
+        if (!option || !IsFreeCustomizationReq(option->ChrCustomizationReqID, race, classId))
+            return false;
+        std::vector<ChrCustomizationChoiceEntry const*> const* choices = sDB2Manager.GetCustomiztionChoices(option->ID);
+        if (!choices)
+            return false;
+        auto itr = std::ranges::find(*choices, uint32(choice.ChrCustomizationChoiceID), &ChrCustomizationChoiceEntry::ID);
+        return itr != choices->end() && IsFreeCustomizationReq((*itr)->ChrCustomizationReqID, race, classId);
+    });
+    if (!current.empty() && offered && session->ValidateAppearance(Races(race), Classes(classId), Gender(sex), { current.data(), current.data() + current.size() }))
         return;
 
     // none (bots made before the appearance fix) or invalid ones: a new valid look. Async like the position update:
