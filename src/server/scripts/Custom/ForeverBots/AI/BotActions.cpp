@@ -6,7 +6,10 @@
 
 #include "BotAI.h"
 #include "GameTime.h"
+#include "Item.h"
+#include "ItemTemplate.h"
 #include "Log.h"
+#include "ObjectMgr.h"
 #include "Player.h"
 #include "Spell.h"
 #include "SpellAuras.h"
@@ -19,6 +22,34 @@ using namespace ForeverBots;
 namespace
 {
     constexpr uint32 RefusedCastGrace = 2500;
+}
+
+// Classic 1.60 ammo: shots need the arrows or bullets named in the ammo slot, in the bags (Player::NeedsAmmo, Spell.cpp
+// SPELL_FAILED_NO_AMMO), and every shot takes one. Nobody buys ammo for a bot: it always carries the vendor ammo of
+// its level.
+void ForeverBotAI::EnsureAmmo()
+{
+    if (!me->NeedsAmmo())
+        return;
+    if (uint32 const current = me->GetAmmoId(); current && me->GetItemCount(current) >= 200)
+        return;
+
+    // vendor arrows / bullets by required level: Rough, Sharp, Razor, Jagged / Light, Heavy, Solid, Accurate
+    static constexpr std::array<std::pair<uint8, uint32>, 4> Arrows = { { { 1, 2512 }, { 10, 2515 }, { 25, 3030 }, { 40, 11285 } } };
+    static constexpr std::array<std::pair<uint8, uint32>, 4> Bullets = { { { 1, 2516 }, { 10, 2519 }, { 25, 3033 }, { 40, 11284 } } };
+    Item const* ranged = me->GetItemByPos(INVENTORY_SLOT_BAG_0, EQUIPMENT_SLOT_RANGED);
+    bool const gun = ranged && ranged->GetTemplate()->GetSubClass() == ITEM_SUBCLASS_WEAPON_GUN;
+
+    uint32 ammo = 0;
+    for (auto const& [level, itemId] : gun ? Bullets : Arrows)
+        if (me->GetLevel() >= level && sObjectMgr->GetItemTemplate(itemId))
+            ammo = itemId;
+    if (!ammo)
+        return;
+
+    me->StoreNewItemInBestSlots(ammo, 1000, ItemContext::NONE);
+    if (!me->SetAmmo(ammo))
+        me->AutoSelectAmmo();
 }
 
 bool ForeverBotAI::IsSpellBlocked(uint32 spellId, uint32 now) const
@@ -109,9 +140,16 @@ bool ForeverBotAI::Cast(BotSpell const* spell, Unit* target)
                 if (now >= _failLogged[key])
                 {
                     _failLogged[key] = now + 10000;
-                    TC_LOG_INFO("server.foreverbots", "[BotAI] Bot={} cast {} ({}) on {} refused: {} (dist {:.1f}, melee {}, facing {})",
+                    // PREVENTED_BY_MECHANIC: which state and which of my auras carry a mechanic
+                    std::string mechanics;
+                    if (result == SPELL_FAILED_PREVENTED_BY_MECHANIC)
+                        for (auto const& [auraId, application] : me->GetAppliedAuras())
+                            if (uint64 const mask = application->GetBase()->GetSpellInfo()->GetAllEffectsMechanicMask())
+                                mechanics += Trinity::StringFormat(" {}:{:#x}", auraId, mask);
+                    TC_LOG_INFO("server.foreverbots", "[BotAI] Bot={} cast {} ({}) on {} refused: {} (dist {:.1f}, melee {}, facing {}, unit flags {:#x}{}{})",
                         me->GetName(), spell->Name, spell->Info->Id, target->GetName(), uint32(result), me->GetDistance(target),
-                        me->IsWithinMeleeRange(target), me->HasInArc(float(M_PI) / 2, target));
+                        me->IsWithinMeleeRange(target), me->HasInArc(float(M_PI) / 2, target), uint32(me->m_unitData->Flags),
+                        mechanics.empty() ? "" : ", mechanic auras", mechanics);
                 }
             }
         }

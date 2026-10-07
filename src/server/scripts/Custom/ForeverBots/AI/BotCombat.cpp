@@ -306,6 +306,15 @@ void ForeverBotAI::ProposeHealer(BotContext& ctx, bool emergencyOnly /*= false*/
         }
     }
 
+    // debug: someone needs a heal and no heal can be cast on them (why a healer stands there with full mana)
+    if (!bestDirect && _brain.Size() == 0 && (ctx.Data->Debug || sForeverBotMgr->IsGlobalDebug()) && ctx.Now >= _healBlockedLog)
+    {
+        _healBlockedLog = ctx.Now + 3000;
+        TC_LOG_INFO("server.foreverbots", "[BotAI] Bot={} can't heal {} at {:.0f}%: dist {:.1f}, line of sight {}, casting {}, moving {}, {} heals known",
+            me->GetName(), best->GetName(), pct, me->GetDistance(best), me->IsWithinLOSInMap(best), me->HasUnitState(UNIT_STATE_CASTING),
+            me->isMoving(), heals.size());
+    }
+
     BotSpell const* direct = critical && fastest ? fastest : bestDirect;
     // not worth a direct heal yet: less missing than most of the smallest heal would restore
     if (direct && !critical && missing < int32(float(direct->Amount) * 0.7f) && pct > 70.0f)

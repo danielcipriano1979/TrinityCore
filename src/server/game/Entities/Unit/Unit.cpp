@@ -2285,23 +2285,32 @@ void Unit::DoMeleeAttackIfReady()
 
 void Unit::AttackerStateUpdate(Unit* victim, WeaponAttackType attType, bool extra)
 {
+    // Forever: a player's swing dropped here gets no error message on the client ("my melee does nothing"); with
+    // Logger.entities.unit.swing=2,Server in worldserver.conf the reason goes to Server.log
+    auto dropped = [&](char const* why)
+    {
+        if (IsPlayer())
+            TC_LOG_DEBUG("entities.unit.swing", "Swing of {} on {} dropped: {} (unit flags {:#x}, unit state {:#x}, dist {:.1f})",
+                GetName(), victim->GetName(), why, uint32(m_unitData->Flags), m_state, GetDistance(victim));
+    };
+
     if (HasUnitFlag(UNIT_FLAG_PACIFIED))
-        return;
+        return dropped("pacified");
 
     if (HasUnitState(UNIT_STATE_CANNOT_AUTOATTACK) && !extra)
-        return;
+        return dropped("unit state: cannot autoattack");
 
     if (HasAuraType(SPELL_AURA_DISABLE_ATTACKING_EXCEPT_ABILITIES))
-        return;
+        return dropped("aura: attacks disabled except abilities");
 
     if (HasAuraType(SPELL_AURA_DISABLE_AUTOATTACK))
-        return;
+        return dropped("aura: autoattack disabled");
 
     if (!victim->IsAlive())
         return;
 
     if ((attType == BASE_ATTACK || attType == OFF_ATTACK) && !IsWithinLOSInMap(victim))
-        return;
+        return dropped("no line of sight");
 
     AtTargetAttacked(victim, true);
     RemoveAurasWithInterruptFlags(SpellAuraInterruptFlags::Attacking);

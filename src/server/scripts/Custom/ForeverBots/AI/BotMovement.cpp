@@ -40,8 +40,13 @@ bool ForeverBotAI::IsChasing(Unit* target) const
 
 void ForeverBotAI::ChaseTarget(Unit* target, float minRange, float maxRange, Optional<float> angle)
 {
-    if (IsChasing(target))
+    // a chase already running is only kept when it wants the same spot: "get closer" (no line of sight, mob on the
+    // healer) asks for a smaller range on the same target
+    if (IsChasing(target) && _chaseMin == minRange && _chaseMax == maxRange && _chaseAngle == angle)
         return;
+    _chaseMin = minRange;
+    _chaseMax = maxRange;
+    _chaseAngle = angle;
     MotionMaster* motion = me->GetMotionMaster();
     motion->Clear();
     Optional<ChaseRange> range;
@@ -120,7 +125,10 @@ void ForeverBotAI::MoveInCombat(BotContext& ctx, Unit* target)
             if (enemy->GetVictim() == me && me->IsWithinMeleeRange(enemy))
                 attackedInMelee = true;
 
-        if (!me->IsWithinDistInMap(anchor, HealerReach) || !me->IsWithinLOSInMap(anchor))
+        // no line of sight (a ledge, a corner): right next to the anchor, 10 to 20 yd away can still be behind the wall
+        if (!me->IsWithinLOSInMap(anchor))
+            ChaseTarget(anchor, 0.0f, 4.0f, {});
+        else if (!me->IsWithinDistInMap(anchor, HealerReach))
             ChaseTarget(anchor, 10.0f, 20.0f, {});
         else if (attackedInMelee && anchor == ctx.Tank && !me->IsWithinDistInMap(anchor, 5.0f))
             ChaseTarget(anchor, 0.0f, 3.0f, {});           // bring the mob to the tank

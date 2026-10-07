@@ -148,6 +148,7 @@ void ForeverBotAI::UpdateAI(uint32 diff)
         if (_spells.NeedsRebuild(me))
             _spells.Build(me);
         _slowTimer = 0;
+        EnsureAmmo();
         ctx.Party->Prune(ctx.Now);
         std::erase_if(_unreachable, [&](auto const& entry) { return entry.second <= ctx.Now; });
         std::erase_if(_blockedSpells, [&](auto const& entry) { return entry.second <= ctx.Now; });
@@ -205,10 +206,34 @@ void ForeverBotAI::Decide(BotContext& ctx, uint32 elapsed)
     }
     else
     {
-        if (me->GetVictim())
-            me->AttackStop();
-        if (data.Order == BotOrder::Attack)
-            data.Order = BotOrder::Follow;
+        // the owner's attack order starts the fight: their selection, before anything is in combat with the group
+        Unit* ordered = nullptr;
+        if (data.Order == BotOrder::Attack && !data.Passive)
+            if (Player* owner = ObjectAccessor::GetPlayer(*me, data.Owner))
+                if (Unit* selected = owner->GetSelectedUnit(); IsValidEnemy(selected) && me->IsWithinDistInMap(selected, 60.0f))
+                    ordered = selected;
+
+        if (ordered)
+        {
+            target = ordered;
+            ctx.Party->FocusTarget = ordered->GetGUID();
+            ctx.Party->FocusExpires = ctx.Now + 30000;
+            if (role != BotRole::Heal)
+            {
+                EnsureAttacking(ordered, !IsCasterClass() && (!IsRangedClass() || me->IsWithinMeleeRange(ordered)));
+                if (role == BotRole::Tank)
+                    ProposeTank(ctx, ordered);
+                else
+                    ProposeDps(ctx, ordered);
+            }
+        }
+        else
+        {
+            if (me->GetVictim())
+                me->AttackStop();
+            if (data.Order == BotOrder::Attack)
+                data.Order = BotOrder::Follow;
+        }
 
         // a world bot looks for something of its level to hunt once it is rested
         if (data.IsWorldBot() && !data.Passive && me->GetHealthPct() > 70.0f

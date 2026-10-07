@@ -216,6 +216,7 @@ private:
     bool HasAuraNamed(Unit const* target, std::string const& name, bool mine) const;
     bool HasAuraFrom(Unit const* target, BotSpell const* spell, bool mine) const;
     void EnsureAttacking(Unit* target, bool melee);
+    void EnsureAmmo();                                      // arrows or bullets for a bow, crossbow or gun
     bool IsSpellBlocked(uint32 spellId, uint32 now) const;
 
     // combat (BotCombat.cpp)
@@ -271,6 +272,10 @@ private:
     ObjectGuid _losBlocked;                                 // the server refused a cast on it for line of sight
     uint32 _losBlockedUntil = 0;
     std::unordered_map<ObjectGuid, uint32> _unreachable;    // enemy -> ignored until
+    float _chaseMin = -1.0f;                                // the range of the chase in progress (ChaseTarget)
+    float _chaseMax = -1.0f;
+    Optional<float> _chaseAngle;
+    uint32 _healBlockedLog = 0;                             // debug: next "can't heal" log
 
     // stuck detection
     ObjectGuid _stuckTarget;
