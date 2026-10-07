@@ -200,7 +200,14 @@ void ForeverBotAI::Decide(BotContext& ctx, uint32 elapsed)
                         _brain.Propose(R_ROTATION - 5, wand->Name.c_str(), target, [this, wand, target]() { return Cast(wand, target); }, "healer, wand");
             }
             else
+            {
                 ProposeDps(ctx, target);
+                // out of mana: the wand, instead of standing there (a mage did 7 dps over a boss fight at 1% mana)
+                if (IsCasterClass() && me->GetMaxPower(POWER_MANA) && me->GetPowerPct(POWER_MANA) < 15.0f
+                    && !me->GetCurrentSpell(CURRENT_AUTOREPEAT_SPELL))
+                    if (BotSpell const* wand = _spells.Find("Shoot"); wand && CanCast(wand, target))
+                        _brain.Propose(R_ROTATION - 5, wand->Name.c_str(), target, [this, wand, target]() { return Cast(wand, target); }, "out of mana, wand");
+            }
             ProposeCrowdControl(ctx, target);
         }
         ProposeClassUpkeep(ctx, target, true);

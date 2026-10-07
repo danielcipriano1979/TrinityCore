@@ -149,8 +149,17 @@ void ForeverBotAI::MoveInCombat(BotContext& ctx, Unit* target)
                 attackedInMelee = true;
 
         // no line of sight (a ledge, a corner): right next to the anchor, 10 to 20 yd away can still be behind the wall
+        // ...and not with a chase: "within 4 yd" counts the two hit boxes, so a healer 6.5 yd away and 3.6 yd lower (under a
+        // ledge, in the water) was "in range", never moved and watched the tank die without line of sight. It walks to the
+        // anchor's own position, where line of sight is certain.
         if (!me->IsWithinLOSInMap(anchor, LINEOFSIGHT_ALL_CHECKS, VMAP::ModelIgnoreFlags::M2))
-            ChaseTarget(anchor, 0.0f, 4.0f, {});
+        {
+            if (motion->GetCurrentMovementGeneratorType() != POINT_MOTION_TYPE)
+            {
+                motion->Clear();
+                motion->MovePoint(2, anchor->GetPositionX(), anchor->GetPositionY(), anchor->GetPositionZ());
+            }
+        }
         else if (!me->IsWithinDistInMap(anchor, HealerReach))
             ChaseTarget(anchor, 10.0f, 20.0f, {});
         else if (attackedInMelee && anchor == ctx.Tank && !me->IsWithinDistInMap(anchor, 5.0f))
@@ -182,6 +191,9 @@ void ForeverBotAI::MoveInCombat(BotContext& ctx, Unit* target)
         // a hunter can't shoot point blank: step out unless the mob is on me
         if (IsRangedClass() && dist < 8.0f && target->GetVictim() && target->GetVictim() != me)
         {
+            // one step out at a time: reissued every tick, the hunter never stood still long enough to shoot
+            if (motion->GetCurrentMovementGeneratorType() == POINT_MOTION_TYPE)
+                return;
             float const angle = target->GetAbsoluteAngle(me);
             Position away(target->GetPositionX() + 14.0f * std::cos(angle), target->GetPositionY() + 14.0f * std::sin(angle), target->GetPositionZ());
             me->UpdateAllowedPositionZ(away.m_positionX, away.m_positionY, away.m_positionZ);
