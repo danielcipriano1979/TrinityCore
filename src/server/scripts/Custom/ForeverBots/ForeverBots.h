@@ -181,8 +181,9 @@ private:
 
     struct WorldSpot { uint16 MapId; uint8 MinLevel; uint8 MaxLevel; Position Pos; };
 
-    // a Group Finder run on its way: the owner is being teleported, the bots are recruited once they arrive
-    struct DungeonRun { uint32 MapId = 0; uint8 Roles = 0; uint32 Timer = 0; };
+    // a Group Finder run on its way: the owner is teleported a moment after posting the group, the bots are recruited once
+    // they arrive
+    struct DungeonRun { WorldLocation Entrance; uint8 Roles = 0; uint32 Timer = 0; bool Teleported = false; };
 
     std::unordered_map<ObjectGuid, ForeverBot> _bots;
     std::unordered_map<ObjectGuid, DungeonRun> _dungeonRuns;

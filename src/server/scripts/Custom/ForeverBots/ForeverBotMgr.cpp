@@ -46,6 +46,7 @@ namespace
     constexpr uint32 ResurrectDelay = 15000;          // time for a healer to resurrect it first
     constexpr uint32 WorldResurrectDelay = 20000;
     constexpr float RegroupDistance = 120.0f;
+    constexpr uint32 DungeonRunTeleportDelay = 1500;        // ms between posting a group in the Group Finder and the teleport
     constexpr uint32 BalanceInterval = 5000;
     constexpr uint32 MaxLoginsPerBalance = 3;       // spreads world bot logins over time
     constexpr uint32 MaxVanillaItemId = 24500;      // the client DB2s also carry later expansions' items
@@ -1613,19 +1614,16 @@ bool ForeverBotMgr::StartDungeonRun(Player* owner, uint32 category, std::vector<
         return false;
     }
 
+    // The teleport waits for UpdateDungeonRuns: right after posting, the client searches the listings (CMSG_LFG_LIST_SEARCH)
+    // and waits for the results forever ("Searching..." in the window, also in later sessions of the window). A far teleport
+    // from here made the server drop that search.
     DungeonRun& run = _dungeonRuns[owner->GetGUID()];
-    run.MapId = entrance->Loc.GetMapId();
+    run.Entrance = entrance->Loc;
     run.Roles = roles;
     run.Timer = 0;
-    TC_LOG_INFO("misc", "ForeverBots: Group Finder run of {} to {} (map {}, roles {})", owner->GetName(), name, run.MapId, roles);
+    run.Teleported = false;
+    TC_LOG_INFO("misc", "ForeverBots: Group Finder run of {} to {} (map {}, roles {})", owner->GetName(), name, run.Entrance.GetMapId(), roles);
     chat.SendSysMessage(Trinity::StringFormat("ForeverBots: {} - the group is on its way.", name));
-
-    if (owner->GetMapId() != run.MapId && !owner->TeleportTo(entrance->Loc))
-    {
-        chat.SendSysMessage("ForeverBots: could not take you into the dungeon.");
-        _dungeonRuns.erase(owner->GetGUID());
-        return false;
-    }
     return true;
 }
 
@@ -1641,8 +1639,24 @@ void ForeverBotMgr::UpdateDungeonRuns(uint32 diff)
             itr = _dungeonRuns.erase(itr);
             continue;
         }
+        if (!run.Teleported)
+        {
+            if (run.Timer < DungeonRunTeleportDelay || !owner->IsInWorld() || owner->IsBeingTeleported())
+            {
+                ++itr;
+                continue;
+            }
+            run.Teleported = true;
+            if (owner->GetMapId() != run.Entrance.GetMapId()
+                && (owner->IsInCombat() || !owner->IsAlive() || !owner->TeleportTo(run.Entrance)))
+            {
+                ChatHandler(owner->GetSession()).SendSysMessage("ForeverBots: could not take you into the dungeon.");
+                itr = _dungeonRuns.erase(itr);
+                continue;
+            }
+        }
         // still on the loading screen
-        if (!owner->IsInWorld() || owner->IsBeingTeleported() || owner->GetMapId() != run.MapId)
+        if (!owner->IsInWorld() || owner->IsBeingTeleported() || owner->GetMapId() != run.Entrance.GetMapId())
         {
             ++itr;
             continue;
