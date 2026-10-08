@@ -502,7 +502,7 @@ public:
                             return;
 
                         m_uiFinalGuardAliveCount = m_uiGuardAliveCount;
-                        DoRespawnGameObject(m_uiGordokTributeGUID);
+                        DoRespawnGameObject(m_uiGordokTributeGUID, 1h);   // Forever: the default is one minute
                         m_bIsGordokTributeRespawned = true;
                     }
                     m_auiEncounter[TYPE_GORDOK_TRIBUTE] = data;
@@ -528,7 +528,7 @@ public:
                         DoUseDoorOrButton(m_uiCorruptVineGUID);
 
                         for (ObjectGuid const& guid : m_lFelvineShardGUIDs)
-                            DoRespawnGameObject(guid);
+                            DoRespawnGameObject(guid, 1h);   // Forever: the default is one minute
                     }
                     m_auiEncounter[type] = data;
                     break;

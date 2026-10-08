@@ -994,7 +994,7 @@ public:
                         }
 
                         // Spawn "Arena Spoils" chest with sick loot
-                        DoRespawnGameObject(m_uiArenaSpoilsGUID);
+                        DoRespawnGameObject(m_uiArenaSpoilsGUID, 1h);   // Forever: the default is one minute
                     }
                     m_auiEncounter[12] = data;
                     break;

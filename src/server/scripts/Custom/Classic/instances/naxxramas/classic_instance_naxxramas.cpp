@@ -990,8 +990,8 @@ void classic_instance_naxxramas_InstanceScript::SetData(uint32 uiType, uint32 ui
             }
             else if (uiData == DONE)
             {
-                // spawns it for 30 minutes?
-                DoRespawnGameObject(m_uiHorsemenChestGUID);
+                // Forever: the default of DoRespawnGameObject is one minute, an unopened chest was lost for good
+                DoRespawnGameObject(m_uiHorsemenChestGUID, 30min);
                 if (Creature* pZeliek = GetSingleCreatureFromStorage(NPC_ZELIEK))
                 {
                     for (uint32 spiritEntry : { 16775u, 16776u, 16777u, 16778u })
