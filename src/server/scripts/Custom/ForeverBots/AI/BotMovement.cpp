@@ -16,11 +16,17 @@
 #include "Log.h"
 #include "Map.h"
 #include "MotionMaster.h"
+#include "ObjectMgr.h"
 #include "ObjectAccessor.h"
 #include "PathGenerator.h"
 #include "Player.h"
 #include "Random.h"
+#include "SpellAuraDefines.h"
+#include "SpellInfo.h"
+#include "SpellMgr.h"
 #include "StringFormat.h"
+#include <array>
+#include <mutex>
 
 using namespace ForeverBots;
 
@@ -442,6 +448,128 @@ void ForeverBotAI::ProposePull(BotContext& ctx)
     }, Trinity::StringFormat("{} at {:.0f} yd", best->GetName(), bestLength));
 }
 
+// ---------------------------------------------------------------------------------------------------------------------
+// Consumables: the food, the water and the potions of the bot's level. A bot does not carry them, it uses the spell of
+// the best vanilla item it could use: the food and the drink are the real ones (sitting, the aura, its regeneration, the
+// Well Fed buff of the cooked foods), the potions are instant and share the two minute cooldown.
+// ---------------------------------------------------------------------------------------------------------------------
+namespace
+{
+    struct Consumables
+    {
+        uint32 Food = 0;            // spell ids
+        uint32 BuffFood = 0;        // a food that gives Well Fed
+        uint32 WellFed = 0;         // ...and the buff it gives
+        uint32 Drink = 0;
+        uint32 HealPotion = 0;
+        uint32 ManaPotion = 0;
+    };
+
+    constexpr uint32 MaxVanillaConsumableId = 24500;    // the client data also carries later expansions' items
+    constexpr uint32 PotionCooldown = 2 * MINUTE * IN_MILLISECONDS;
+
+    std::array<Consumables, 64> BuildConsumables()
+    {
+        std::array<Consumables, 64> table;
+        std::array<Consumables, 64> levels;     // required level of what was picked, same fields
+        auto offer = [&](uint32 Consumables::* field, uint32 spellId, uint32 requiredLevel, uint32 Consumables::* extra = nullptr, uint32 extraValue = 0)
+        {
+            for (size_t level = std::max<uint32>(requiredLevel, 1); level < table.size(); ++level)
+            {
+                if (table[level].*field && levels[level].*field >= requiredLevel)
+                    continue;
+                table[level].*field = spellId;
+                levels[level].*field = requiredLevel;
+                if (extra)
+                    table[level].*extra = extraValue;
+            }
+        };
+
+        for (auto const& [itemId, proto] : sObjectMgr->GetItemTemplateStore())
+        {
+            if (itemId >= MaxVanillaConsumableId || proto.GetClass() != ITEM_CLASS_CONSUMABLE || proto.GetQuality() != ITEM_QUALITY_NORMAL)
+                continue;
+            if (proto.GetBuyPrice() == 0 || proto.GetBaseRequiredLevel() < 0 || proto.GetBaseRequiredLevel() > 60)
+                continue;
+            char const* name = proto.GetDefaultLocaleName();
+            if (!name || !*name || strstr(name, "Deprecated") || strstr(name, "OLD") || strstr(name, "Test") || strstr(name, "[PH]") || strstr(name, "Conjured"))
+                continue;
+            uint32 const requiredLevel = uint32(proto.GetBaseRequiredLevel());
+
+            for (ItemEffectEntry const* effect : proto.Effects)
+            {
+                if (effect->TriggerType != ITEM_SPELLTRIGGER_ON_USE || effect->SpellID <= 0)
+                    continue;
+                SpellInfo const* info = sSpellMgr->GetSpellInfo(effect->SpellID, DIFFICULTY_NONE);
+                if (!info)
+                    continue;
+
+                bool health = false, mana = false, heal = false, energize = false, other = false;
+                uint32 wellFed = 0;
+                for (SpellEffectInfo const& spellEffect : info->GetEffects())
+                {
+                    if (!spellEffect.IsEffect())
+                        continue;
+                    if (spellEffect.IsAura())
+                    {
+                        switch (spellEffect.ApplyAuraName)
+                        {
+                            case SPELL_AURA_MOD_REGEN:
+                            case SPELL_AURA_OBS_MOD_HEALTH:         health = true; break;
+                            case SPELL_AURA_MOD_POWER_REGEN:
+                            case SPELL_AURA_OBS_MOD_POWER:          mana |= spellEffect.MiscValue == POWER_MANA; break;
+                            case SPELL_AURA_PERIODIC_TRIGGER_SPELL: wellFed = spellEffect.TriggerSpell; break;
+                            default:                                other = true; break;
+                        }
+                    }
+                    else if (spellEffect.Effect == SPELL_EFFECT_HEAL)
+                        heal = true;
+                    else if (spellEffect.Effect == SPELL_EFFECT_ENERGIZE && spellEffect.MiscValue == POWER_MANA)
+                        energize = true;
+                    else
+                        other = true;
+                }
+                if (other)
+                    continue;
+
+                bool const seated = info->HasAuraInterruptFlag(SpellAuraInterruptFlags::Standing);
+                if (seated && health && !mana)
+                {
+                    if (wellFed && sSpellMgr->GetSpellInfo(wellFed, DIFFICULTY_NONE))
+                        offer(&Consumables::BuffFood, info->Id, requiredLevel, &Consumables::WellFed, wellFed);
+                    else if (!wellFed)
+                        offer(&Consumables::Food, info->Id, requiredLevel);
+                }
+                else if (seated && mana && !health && !wellFed)
+                    offer(&Consumables::Drink, info->Id, requiredLevel);
+                else if (proto.GetSubClass() == ITEM_SUBCLASS_POTION && !seated && !health && !mana && !wellFed)
+                {
+                    if (heal && !energize)
+                        offer(&Consumables::HealPotion, info->Id, requiredLevel);
+                    else if (energize && !heal)
+                        offer(&Consumables::ManaPotion, info->Id, requiredLevel);
+                }
+            }
+        }
+        return table;
+    }
+
+    Consumables const& ConsumablesFor(uint8 level)
+    {
+        // built once, at the first use (the item store is loaded by then); bots think on several map threads
+        static std::once_flag once;
+        static std::array<Consumables, 64> table;
+        std::call_once(once, []()
+        {
+            table = BuildConsumables();
+            for (uint8 sample : { 10, 20, 30, 40, 50, 60 })
+                TC_LOG_INFO("misc", "ForeverBots: consumables at level {}: food {} buff food {} (well fed {}) drink {} healing potion {} mana potion {}",
+                    sample, table[sample].Food, table[sample].BuffFood, table[sample].WellFed, table[sample].Drink, table[sample].HealPotion, table[sample].ManaPotion);
+        });
+        return table[std::min<size_t>(level, table.size() - 1)];
+    }
+}
+
 void ForeverBotAI::Rest(BotContext& ctx, uint32 elapsed)
 {
     _outOfCombatTime += elapsed;
@@ -452,24 +580,69 @@ void ForeverBotAI::Rest(BotContext& ctx, uint32 elapsed)
         return;
     }
 
+    Consumables const& items = ConsumablesFor(me->GetLevel());
     bool const usesMana = me->GetMaxPower(POWER_MANA) > 0;
     bool const needs = me->GetHealthPct() < 95.0f || (usesMana && me->GetPowerPct(POWER_MANA) < 95.0f);
-    if (!needs)
+    // the Well Fed buff of a cooked meal: party bots keep it up (a meal even at full health)
+    bool const wantsBuff = items.BuffFood && items.WellFed && !me->HasAura(items.WellFed) && ctx.Data && !ctx.Data->IsWorldBot()
+        && ctx.Leader && ctx.Leader != me && !ctx.Leader->isMoving();
+    if (!needs && !wantsBuff)
     {
         if (me->GetStandState() == UNIT_STAND_STATE_SIT)
             me->SetStandState(UNIT_STAND_STATE_STAND);
         return;
     }
 
-    // eating and drinking: sit and recover about 4% a second
     if (me->GetStandState() != UNIT_STAND_STATE_SIT)
         me->SetStandState(UNIT_STAND_STATE_SIT);
+
+    bool const eating = (items.Food && me->HasAura(items.Food)) || (items.BuffFood && me->HasAura(items.BuffFood));
+    bool const drinking = items.Drink && me->HasAura(items.Drink);
+    if (!eating && (me->GetHealthPct() < 100.0f || wantsBuff))
+        if (uint32 const food = wantsBuff ? items.BuffFood : (items.Food ? items.Food : items.BuffFood))
+            me->CastSpell(me, food, CastSpellExtraArgs(TRIGGERED_FULL_MASK));
+    if (usesMana && !drinking && items.Drink && me->GetPowerPct(POWER_MANA) < 100.0f)
+        me->CastSpell(me, items.Drink, CastSpellExtraArgs(TRIGGERED_FULL_MASK));
+
+    // nothing of its level in the data (or the meal did not take): recover about 4% a second, as before
     uint32 const pct = std::max<uint32>(1, elapsed * 4 / 1000);
-    if (me->GetHealthPct() < 100.0f)
+    bool const nowEating = (items.Food && me->HasAura(items.Food)) || (items.BuffFood && me->HasAura(items.BuffFood));
+    if (!nowEating && me->GetHealthPct() < 100.0f)
         me->ModifyHealth(me->CountPctFromMaxHealth(pct));
-    if (usesMana && me->GetPowerPct(POWER_MANA) < 100.0f)
+    if (usesMana && !(items.Drink && me->HasAura(items.Drink)) && me->GetPowerPct(POWER_MANA) < 100.0f)
         me->ModifyPower(POWER_MANA, int32(me->GetMaxPower(POWER_MANA) * pct / 100));
-    (void)ctx;
+}
+
+// In a fight: a healing potion when low on health, a mana potion for whoever lives on mana (healers first of all).
+void ForeverBotAI::ProposeConsumables(BotContext& ctx)
+{
+    if (ctx.Now < _potionReadyAt)
+        return;
+
+    Consumables const& items = ConsumablesFor(me->GetLevel());
+    uint32 const now = ctx.Now;
+    auto use = [this, now](uint32 spellId)
+    {
+        me->CastSpell(me, spellId, CastSpellExtraArgs(TRIGGERED_FULL_MASK));
+        _potionReadyAt = now + PotionCooldown;
+        return true;
+    };
+
+    if (items.HealPotion && me->GetHealthPct() < 35.0f)
+    {
+        uint32 const spellId = items.HealPotion;
+        _brain.Propose(R_CRITICAL_HEAL + 5, "healing potion", me, [use, spellId]() { return use(spellId); },
+            Trinity::StringFormat("health {:.0f}%", me->GetHealthPct()));
+        return;
+    }
+
+    bool const livesOnMana = me->GetPowerType() == POWER_MANA && (IsCasterClass() || EffectiveRole(ctx) == BotRole::Heal);
+    if (items.ManaPotion && livesOnMana && me->GetPowerPct(POWER_MANA) < 20.0f)
+    {
+        uint32 const spellId = items.ManaPotion;
+        _brain.Propose(R_HEAL + 5, "mana potion", me, [use, spellId]() { return use(spellId); },
+            Trinity::StringFormat("mana {:.0f}%", me->GetPowerPct(POWER_MANA)));
+    }
 }
 
 void ForeverBotAI::Wander(ForeverBot const& data, uint32 elapsed)

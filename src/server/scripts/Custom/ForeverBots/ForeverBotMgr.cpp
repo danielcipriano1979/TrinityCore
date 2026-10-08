@@ -14,11 +14,13 @@
 #include "Containers.h"
 #include "DatabaseEnv.h"
 #include "DB2Stores.h"
+#include "GameTime.h"
 #include "Group.h"
 #include "GroupFinderListings.h"
 #include "GroupMgr.h"
 #include "Item.h"
 #include "LFG.h"
+#include "Loot.h"
 #include "ItemTemplate.h"
 #include "Log.h"
 #include "MotionMaster.h"
@@ -47,6 +49,7 @@ namespace
     constexpr uint32 ResurrectDelay = 15000;          // dead bot, nobody in the group can resurrect: stands up after this
     constexpr uint32 ResurrectByGroupDelay = 90000;   // ...while a member that can resurrect is alive: their job first
     constexpr uint32 CorpseRunTime = 40000;           // wipe: the run from the graveyard back into the dungeon
+    constexpr uint32 GearCheckInterval = 10000;       // how often a bot looks into its bags for gear it won
 
     // classes with an out of combat resurrection and the level they learn it at (the druid only has Rebirth)
     bool CanResurrectOthers(Player const* player)
@@ -750,6 +753,149 @@ namespace
             score += int32(proto.GetSubClass()) * 6;
         return score;
     }
+
+    // the equipment slots an item may go to under that plan (two for a dual wielder's one-hander); none = not for this bot
+    std::vector<uint8> SlotsFor(ItemTemplate const& proto, GearPlan const& plan)
+    {
+        uint32 const subClass = proto.GetSubClass();
+        switch (proto.GetInventoryType())
+        {
+            case INVTYPE_HEAD:      return {};  // Forever: no helmets for now, a helmet is the suspect of a client crash when gear is drawn (Forever.VisibleItemAppearance)
+            case INVTYPE_NECK:      return { EQUIPMENT_SLOT_NECK };
+            case INVTYPE_SHOULDERS: return { EQUIPMENT_SLOT_SHOULDERS };
+            case INVTYPE_CHEST:
+            case INVTYPE_ROBE:      return { EQUIPMENT_SLOT_CHEST };
+            case INVTYPE_WAIST:     return { EQUIPMENT_SLOT_WAIST };
+            case INVTYPE_LEGS:      return { EQUIPMENT_SLOT_LEGS };
+            case INVTYPE_FEET:      return { EQUIPMENT_SLOT_FEET };
+            case INVTYPE_WRISTS:    return { EQUIPMENT_SLOT_WRISTS };
+            case INVTYPE_HANDS:     return { EQUIPMENT_SLOT_HANDS };
+            case INVTYPE_FINGER:    return { EQUIPMENT_SLOT_FINGER1 };
+            case INVTYPE_CLOAK:     return { EQUIPMENT_SLOT_BACK };
+            case INVTYPE_2HWEAPON:
+                if (plan.TwoHand)
+                    return { EQUIPMENT_SLOT_MAINHAND };
+                break;
+            case INVTYPE_WEAPON:
+            case INVTYPE_WEAPONMAINHAND:
+            {
+                std::vector<uint8> slots;
+                if (!plan.TwoHand)
+                    slots.push_back(EQUIPMENT_SLOT_MAINHAND);
+                if (plan.DualWield && proto.GetInventoryType() == INVTYPE_WEAPON)
+                    slots.push_back(EQUIPMENT_SLOT_OFFHAND);
+                return slots;
+            }
+            case INVTYPE_WEAPONOFFHAND:
+                if (plan.DualWield)
+                    return { EQUIPMENT_SLOT_OFFHAND };
+                break;
+            case INVTYPE_SHIELD:
+                if (plan.Shield)
+                    return { EQUIPMENT_SLOT_OFFHAND };
+                break;
+            case INVTYPE_HOLDABLE:
+                if (plan.OffHandHoldable)
+                    return { EQUIPMENT_SLOT_OFFHAND };
+                break;
+            case INVTYPE_RANGED:
+            case INVTYPE_THROWN:
+                if (plan.Ranged)
+                    return { EQUIPMENT_SLOT_RANGED };
+                break;
+            case INVTYPE_RANGEDRIGHT:
+                if ((plan.Wand && subClass == ITEM_SUBCLASS_WEAPON_WAND) || (plan.Ranged && subClass != ITEM_SUBCLASS_WEAPON_WAND))
+                    return { EQUIPMENT_SLOT_RANGED };
+                break;
+            default:
+                break;
+        }
+        return {};
+    }
+
+    bool IsGear(ItemTemplate const& proto) { return proto.GetClass() == ITEM_CLASS_WEAPON || proto.GetClass() == ITEM_CLASS_ARMOR; }
+}
+
+// ---------------------------------------------------------------------------------------------------------------------
+// Loot: bots take part in the group's rolls, the real players always first
+// ---------------------------------------------------------------------------------------------------------------------
+bool ForeverBotMgr::WantsItem(Player* botPlayer, BotRole role, uint32 itemId) const
+{
+    ItemTemplate const* proto = sObjectMgr->GetItemTemplate(itemId);
+    if (!proto || !IsGear(*proto) || botPlayer->CanUseItem(proto) != EQUIP_ERR_OK)
+        return false;
+
+    GearPlan const plan = PlanFor(botPlayer->GetClass(), role);
+    std::vector<uint8> slots = SlotsFor(*proto, plan);
+    if (proto->GetInventoryType() == INVTYPE_FINGER)
+        slots.push_back(EQUIPMENT_SLOT_FINGER2);
+    int32 const score = ScoreItem(*proto, plan);
+    for (uint8 slot : slots)
+    {
+        Item const* worn = botPlayer->GetItemByPos(INVENTORY_SLOT_BAG_0, slot);
+        if (!worn)
+            return true;
+        ItemTemplate const* wornProto = worn->GetTemplate();
+        // never a lighter armor than the one worn (a warrior does not take cloth for its stats)
+        if (proto->GetClass() == ITEM_CLASS_ARMOR && wornProto->GetClass() == ITEM_CLASS_ARMOR && proto->GetSubClass() < wornProto->GetSubClass())
+            continue;
+        if (score > ScoreItem(*wornProto, plan))
+            return true;
+    }
+    return false;
+}
+
+bool ForeverBotMgr::HasUpgradeInBags(Player* botPlayer, BotRole role) const
+{
+    bool found = false;
+    botPlayer->ForEachItem(ItemSearchLocation::Inventory, [&](Item* item)
+    {
+        if (!WantsItem(botPlayer, role, item->GetEntry()))
+            return ItemSearchCallbackResult::Continue;
+        found = true;
+        return ItemSearchCallbackResult::Stop;
+    });
+    return found;
+}
+
+// A roll the bot is part of. Gear it would wear (better than what it has on): Need, but only once every real player of
+// the roll has answered and none of them needed it; a real player's Need always wins. Anything else: Pass at once, so a
+// roll never waits for the bots and what nobody needs goes to the players.
+void ForeverBotMgr::UpdateLootRolls(ForeverBot& bot, Player* botPlayer)
+{
+    if (botPlayer->GetLootRolls().empty())
+        return;
+
+    std::vector<LootRoll*> const rolls = botPlayer->GetLootRolls();    // copy: a vote can end the roll
+    for (LootRoll* roll : rolls)
+    {
+        LootRoll::RollVoteMap const& votes = roll->GetVotes();
+        auto mine = votes.find(botPlayer->GetGUID());
+        if (mine == votes.end() || mine->second.Vote != RollVote::NotEmitedYet)
+            continue;
+
+        if (!WantsItem(botPlayer, bot.Role, roll->GetItemId()))
+        {
+            roll->PlayerVote(botPlayer, RollVote::Pass);
+            continue;
+        }
+
+        bool playersAnswered = true, playerNeeds = false;
+        for (auto const& [guid, vote] : votes)
+        {
+            if (IsBot(guid))
+                continue;
+            playersAnswered &= vote.Vote != RollVote::NotEmitedYet;
+            playerNeeds |= vote.Vote == RollVote::Need;
+        }
+        if (playerNeeds)
+            roll->PlayerVote(botPlayer, RollVote::Pass);
+        else if (playersAnswered || roll->GetEndTime() - GameTime::Now() < 5s)
+        {
+            roll->PlayerVote(botPlayer, RollVote::Need);
+            TC_LOG_DEBUG("misc", "ForeverBots: {} rolls need on item {}", botPlayer->GetName(), roll->GetItemId());
+        }
+    }
 }
 
 void ForeverBotMgr::AutoGear(Player* bot, BotRole role)
@@ -794,56 +940,8 @@ void ForeverBotMgr::AutoGear(Player* bot, BotRole role)
         if (bot->CanUseItem(&proto) != EQUIP_ERR_OK)
             continue;
 
-        uint32 const subClass = proto.GetSubClass();
-        switch (proto.GetInventoryType())
-        {
-            case INVTYPE_HEAD:      break;      // Forever: no helmets for now, a helmet is the suspect of a client crash when gear is drawn (Forever.VisibleItemAppearance)
-            case INVTYPE_NECK:      consider(EQUIPMENT_SLOT_NECK, proto); break;
-            case INVTYPE_SHOULDERS: consider(EQUIPMENT_SLOT_SHOULDERS, proto); break;
-            case INVTYPE_CHEST:
-            case INVTYPE_ROBE:      consider(EQUIPMENT_SLOT_CHEST, proto); break;
-            case INVTYPE_WAIST:     consider(EQUIPMENT_SLOT_WAIST, proto); break;
-            case INVTYPE_LEGS:      consider(EQUIPMENT_SLOT_LEGS, proto); break;
-            case INVTYPE_FEET:      consider(EQUIPMENT_SLOT_FEET, proto); break;
-            case INVTYPE_WRISTS:    consider(EQUIPMENT_SLOT_WRISTS, proto); break;
-            case INVTYPE_HANDS:     consider(EQUIPMENT_SLOT_HANDS, proto); break;
-            case INVTYPE_FINGER:    consider(EQUIPMENT_SLOT_FINGER1, proto); break;
-            case INVTYPE_CLOAK:     consider(EQUIPMENT_SLOT_BACK, proto); break;
-            case INVTYPE_2HWEAPON:
-                if (plan.TwoHand)
-                    consider(EQUIPMENT_SLOT_MAINHAND, proto);
-                break;
-            case INVTYPE_WEAPON:
-            case INVTYPE_WEAPONMAINHAND:
-                if (!plan.TwoHand)
-                    consider(EQUIPMENT_SLOT_MAINHAND, proto);
-                if (plan.DualWield && proto.GetInventoryType() == INVTYPE_WEAPON)
-                    consider(EQUIPMENT_SLOT_OFFHAND, proto);
-                break;
-            case INVTYPE_WEAPONOFFHAND:
-                if (plan.DualWield)
-                    consider(EQUIPMENT_SLOT_OFFHAND, proto);
-                break;
-            case INVTYPE_SHIELD:
-                if (plan.Shield)
-                    consider(EQUIPMENT_SLOT_OFFHAND, proto);
-                break;
-            case INVTYPE_HOLDABLE:
-                if (plan.OffHandHoldable)
-                    consider(EQUIPMENT_SLOT_OFFHAND, proto);
-                break;
-            case INVTYPE_RANGED:
-            case INVTYPE_THROWN:
-                if (plan.Ranged)
-                    consider(EQUIPMENT_SLOT_RANGED, proto);
-                break;
-            case INVTYPE_RANGEDRIGHT:
-                if ((plan.Wand && subClass == ITEM_SUBCLASS_WEAPON_WAND) || (plan.Ranged && subClass != ITEM_SUBCLASS_WEAPON_WAND))
-                    consider(EQUIPMENT_SLOT_RANGED, proto);
-                break;
-            default:
-                break;
-        }
+        for (uint8 slot : SlotsFor(proto, plan))
+            consider(slot, proto);
     }
 
     // replace whatever is equipped (starting gear) with the best picks; second ring is the second best ring
@@ -868,15 +966,94 @@ void ForeverBotMgr::AutoGear(Player* bot, BotRole role)
             oh->second = candidates[EQUIPMENT_SLOT_OFFHAND][1].second;
     }
 
+    auto pickScore = [&](uint8 slot) -> int32
+    {
+        auto pick = std::ranges::find(picks, slot, &std::pair<uint8, uint32>::first);
+        if (pick == picks.end())
+            return -1;
+        ItemTemplate const* proto = sObjectMgr->GetItemTemplate(pick->second);
+        return proto ? ScoreItem(*proto, plan) : -1;
+    };
+
+    // Gear won on rolls: what the bot wears and beats the catalogue pick of its slot stays on; an item in its bags that
+    // beats both goes on (the manager logs the bot out and in for that, UpdatePartyBot). Other gear in the bags goes.
+    std::unordered_map<uint8, Item*> worn;      // slot -> kept item
+    for (uint8 slot = EQUIPMENT_SLOT_START; slot < EQUIPMENT_SLOT_END; ++slot)
+        if (Item* item = bot->GetItemByPos(INVENTORY_SLOT_BAG_0, slot))
+            if (!SlotsFor(*item->GetTemplate(), plan).empty() || slot == EQUIPMENT_SLOT_FINGER2)
+                if (ScoreItem(*item->GetTemplate(), plan) > pickScore(slot))
+                    worn[slot] = item;
+
+    std::unordered_map<uint8, Item*> won;       // slot -> best upgrade in the bags
+    std::vector<Item*> spare;
+    bot->ForEachItem(ItemSearchLocation::Inventory, [&](Item* item)
+    {
+        ItemTemplate const* proto = item->GetTemplate();
+        if (!IsGear(*proto))
+            return ItemSearchCallbackResult::Continue;
+        bool taken = false;
+        if (bot->CanUseItem(proto) == EQUIP_ERR_OK)
+        {
+            int32 const score = ScoreItem(*proto, plan);
+            for (uint8 slot : SlotsFor(*proto, plan))
+            {
+                int32 best = pickScore(slot);
+                if (auto kept = worn.find(slot); kept != worn.end())
+                    best = std::max(best, ScoreItem(*kept->second->GetTemplate(), plan));
+                if (auto other = won.find(slot); other != won.end())
+                    best = std::max(best, ScoreItem(*other->second->GetTemplate(), plan));
+                if (score > best)
+                {
+                    if (auto other = won.find(slot); other != won.end())
+                        spare.push_back(other->second);
+                    won[slot] = item;
+                    taken = true;
+                    break;
+                }
+            }
+        }
+        if (!taken)
+            spare.push_back(item);
+        return ItemSearchCallbackResult::Continue;
+    });
+    for (Item* item : spare)
+        bot->DestroyItem(item->GetBagSlot(), item->GetSlot(), true);
+    for (auto const& [slot, item] : won)
+        worn.erase(slot);
+    // a kept off hand would block a new two-hander
+    if (plan.TwoHand && !worn.contains(EQUIPMENT_SLOT_MAINHAND))
+        worn.erase(EQUIPMENT_SLOT_OFFHAND);
+
     for (uint8 slot = EQUIPMENT_SLOT_START; slot < EQUIPMENT_SLOT_END; ++slot)
         if (slot != EQUIPMENT_SLOT_BODY && slot != EQUIPMENT_SLOT_TABARD && slot != EQUIPMENT_SLOT_TRINKET1 && slot != EQUIPMENT_SLOT_TRINKET2)
-            if (bot->GetItemByPos(INVENTORY_SLOT_BAG_0, slot))
+            if (!worn.contains(slot) && bot->GetItemByPos(INVENTORY_SLOT_BAG_0, slot))
                 bot->DestroyItem(INVENTORY_SLOT_BAG_0, slot, true);
 
     // main hand first (a two-hander decides whether the off hand is free)
-    std::ranges::sort(picks, [](auto const& a, auto const& b) { return (a.first == EQUIPMENT_SLOT_MAINHAND) > (b.first == EQUIPMENT_SLOT_MAINHAND); });
+    auto mainHandFirst = [](uint8 a, uint8 b) { return (a == EQUIPMENT_SLOT_MAINHAND) > (b == EQUIPMENT_SLOT_MAINHAND); };
+    std::vector<uint8> wonSlots;
+    for (auto const& [slot, item] : won)
+        wonSlots.push_back(slot);
+    std::ranges::sort(wonSlots, mainHandFirst);
+    for (uint8 slot : wonSlots)
+    {
+        Item* item = won[slot];
+        uint16 dest = 0;
+        InventoryResult const result = bot->CanEquipItem(slot, dest, item, false);
+        if (result == EQUIP_ERR_OK)
+        {
+            bot->RemoveItem(item->GetBagSlot(), item->GetSlot(), true);
+            bot->EquipItem(dest, item, true);
+            worn[slot] = item;
+        }
+        TC_LOG_DEBUG("misc", "ForeverBots: {} gear slot {} won item {} -> {}", bot->GetName(), slot, item->GetEntry(), uint32(result));
+    }
+
+    std::ranges::sort(picks, [&](auto const& a, auto const& b) { return mainHandFirst(a.first, b.first); });
     for (auto const& [slot, itemId] : picks)
     {
+        if (worn.contains(slot))
+            continue;
         uint16 dest = 0;
         InventoryResult result = bot->CanEquipNewItem(slot, dest, itemId, false);
         if (result == EQUIP_ERR_OK)
@@ -1547,6 +1724,8 @@ void ForeverBotMgr::UpdatePartyBot(ForeverBot& bot, uint32 diff, std::vector<Obj
     if (!owner->IsInWorld() || owner->IsBeingTeleported())
         return;
 
+    UpdateLootRolls(bot, botPlayer);
+
     // The owner died in the dungeon, released and is running back as a ghost: the bots stay inside, where they are
     // (a wipe is handled below).
     bool const sameMap = botPlayer->GetMapId() == owner->GetMapId() && botPlayer->GetInstanceId() == owner->GetInstanceId();
@@ -1644,6 +1823,19 @@ void ForeverBotMgr::UpdatePartyBot(ForeverBot& bot, uint32 diff, std::vector<Obj
     {
         Relog(bot, owner);
         return;
+    }
+
+    // an upgrade won on a roll is in the bags: it is put on like every other heavy change, through a relog (AutoGear)
+    bot.GearCheckTimer += diff;
+    if (bot.GearCheckTimer >= GearCheckInterval)
+    {
+        bot.GearCheckTimer = 0;
+        if (!botPlayer->IsInCombat() && !owner->IsInCombat() && botPlayer->GetLootRolls().empty() && HasUpgradeInBags(botPlayer, bot.Role))
+        {
+            TC_LOG_INFO("misc", "ForeverBots: {} puts on gear won on a roll", botPlayer->GetName());
+            Relog(bot, owner);
+            return;
+        }
     }
 
     // bots have no mounts: while the owner rides, they catch up much sooner

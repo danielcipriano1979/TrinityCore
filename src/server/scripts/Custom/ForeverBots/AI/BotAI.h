@@ -259,6 +259,7 @@ private:
     void SnapToGround();                                    // a bot standing above or under the floor (straight moves in caves)
     void Wander(ForeverBot const& data, uint32 elapsed);
     void Rest(BotContext& ctx, uint32 elapsed);
+    void ProposeConsumables(BotContext& ctx);               // healing and mana potions in a fight
 
     ForeverBots::BotSpellBook _spells;
     ForeverBots::BotBrain _brain;
@@ -282,6 +283,7 @@ private:
     uint32 _petRetry = 0;                                   // next try to get the hunter's pet
     uint32 _autoShotRetry = 0;                              // next Auto Shot start after a refusal
     uint32 _snapUntil = 0;                                  // stepping back onto the floor: no other movement until then
+    uint32 _potionReadyAt = 0;                              // potions share a two minute cooldown
 
     // stuck detection
     ObjectGuid _stuckTarget;

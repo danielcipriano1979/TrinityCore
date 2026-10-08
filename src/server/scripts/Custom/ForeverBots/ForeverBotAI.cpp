@@ -178,6 +178,7 @@ void ForeverBotAI::Decide(BotContext& ctx, uint32 elapsed)
         target = role == BotRole::Tank ? SelectTankTarget(ctx) : SelectTarget(ctx);
 
         ProposeDefensives(ctx);
+        ProposeConsumables(ctx);
         ProposeInterrupts(ctx);
         ProposeDispels(ctx);
         if (role == BotRole::Heal || data.IsWorldBot())

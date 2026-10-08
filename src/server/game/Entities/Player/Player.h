@@ -2300,6 +2300,7 @@ class TC_GAME_API Player final : public Unit, public GridObject<Player>
         Loot* GetLootByWorldObjectGUID(ObjectGuid const& lootWorldObjectGuid) const;
         std::unordered_map<ObjectGuid, Loot*> const& GetAELootView() const { return m_AELootView; }
         LootRoll* GetLootRoll(ObjectGuid const& lootObjectGuid, uint8 lootListId);
+        std::vector<LootRoll*> const& GetLootRolls() const { return m_lootRolls; }     // Forever bots
         void AddLootRoll(LootRoll* roll);
         void RemoveLootRoll(LootRoll* roll);
 

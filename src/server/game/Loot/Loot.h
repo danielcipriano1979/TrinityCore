@@ -263,6 +263,11 @@ public:
 
     bool IsLootItem(ObjectGuid const& lootObject, uint32 lootListId) const;
 
+    // Forever bots (scripts/Custom/ForeverBots): bots vote from the server, after the real players
+    uint32 GetItemId() const { return m_lootItem ? m_lootItem->itemid : 0; }
+    RollVoteMap const& GetVotes() const { return m_rollVoteMap; }
+    TimePoint GetEndTime() const { return m_endTime; }
+
 private:
     void SendStartRoll();
     void SendAllPassed();

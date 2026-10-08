@@ -63,6 +63,7 @@ struct ForeverBot
     bool CreateFailed = false;
     uint32 DeadTimer = 0;
     uint32 CorpseRunTimer = 0;      // wipe: time since this bot released to run back to the dungeon
+    uint32 GearCheckTimer = 0;      // next look at the bags for an upgrade won on a roll
     bool SummonRequested = false;
 
     // world bots
@@ -180,6 +181,9 @@ private:
     void UpdateWorldBot(ForeverBot& bot, uint32 diff, std::vector<ObjectGuid>& toRemove);
     void UpdateLeaderBot(ForeverBot& bot, uint32 diff);
     void UpdateDungeonRuns(uint32 diff);
+    void UpdateLootRolls(ForeverBot& bot, Player* botPlayer);
+    bool WantsItem(Player* botPlayer, BotRole role, uint32 itemId) const;     // an upgrade over what the bot wears
+    bool HasUpgradeInBags(Player* botPlayer, BotRole role) const;
     ObjectGuid FindOrCreateCharacter(uint8 team, uint8 classId, uint32 accountId, WorldSession* session, std::string& error,
         CharacterDatabaseTransaction& pendingCommit);
     void BalanceWorldBots();
