@@ -18,6 +18,7 @@
 // This is where scripts' loading functions should be declared:
 void AddClassicScripts();
 void AddSC_forever_bots();
+void AddSC_forever_random_enchants();
 
 // The name of this function should match:
 // void Add${NameOfDirectory}Scripts()
@@ -25,4 +26,5 @@ void AddCustomScripts()
 {
     AddClassicScripts();
     AddSC_forever_bots();
+    AddSC_forever_random_enchants();
 }

@@ -80,6 +80,7 @@
 #include "InstanceLockMgr.h"
 #include "InstancePackets.h"
 #include "InstanceScript.h"
+#include "ItemAcquireHook.h"
 #include "ItemPackets.h"
 #include "Language.h"
 #include "LanguageMgr.h"
@@ -11922,9 +11923,27 @@ Item* Player::StoreNewItem(ItemPosCountVec const& pos, uint32 itemId, bool updat
         // Classic 1.60: new ammo goes to the ammo slot when it is empty
         if (item->GetTemplate()->GetClass() == ITEM_CLASS_PROJECTILE && !GetAmmoId())
             AutoSelectAmmo();
+
+        ItemAcquireHook::Call(this, item, context);     // Forever: random enchantments (scripts/Custom)
     }
 
     return item;
+}
+
+namespace
+{
+    ItemAcquireHook::Hook ItemAcquiredHook;
+}
+
+void ItemAcquireHook::Set(Hook hook)
+{
+    ItemAcquiredHook = std::move(hook);
+}
+
+void ItemAcquireHook::Call(Player* player, Item* item, ItemContext context)
+{
+    if (ItemAcquiredHook)
+        ItemAcquiredHook(player, item, context);
 }
 
 Item* Player::StoreItem(ItemPosCountVec const& dest, Item* pItem, bool update)
