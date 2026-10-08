@@ -143,7 +143,7 @@ public:
     // Group Finder (the game's own window): the player posted a group for a dungeon. Takes them to its entrance, inside, and
     // recruits the bots the group is missing (one tank, one healer, damage dealers up to five members). roles = what the
     // player ticked (lfg::LfgRoles). Returns false when none of the activities is a dungeon of forever_groupfinder_dungeon.
-    bool StartDungeonRun(Player* owner, std::vector<uint32> const& activities, uint8 roles);
+    bool StartDungeonRun(Player* owner, uint32 category, std::vector<uint32> const& activities, uint8 roles);
 
     void Update(uint32 diff);
 

@@ -390,9 +390,9 @@ public:
         sForeverBotMgr->SetDebug(sConfigMgr->GetBoolDefault("ForeverBots.Debug", false));
         sForeverBotMgr->LoadWorldBotCount(uint32(sConfigMgr->GetIntDefault("ForeverBots.WorldBots", 0)));
         if (sConfigMgr->GetBoolDefault("ForeverBots.GroupFinder", true))
-            GroupFinderListings::SetListedHook([](Player* player, std::vector<uint32> const& activities, uint8 roles)
+            GroupFinderListings::SetListedHook([](Player* player, uint32 category, std::vector<uint32> const& activities, uint8 roles)
             {
-                return sForeverBotMgr->StartDungeonRun(player, activities, roles);
+                return sForeverBotMgr->StartDungeonRun(player, category, activities, roles);
             });
     }
 

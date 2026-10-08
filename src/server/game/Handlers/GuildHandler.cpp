@@ -1304,8 +1304,9 @@ void WorldSession::HandleLfgListProbe(WorldPackets::Null& packet)
                 {
                     // copies: the hook may take the listing down
                     std::vector<uint32> const activities = stored.Activities;
+                    uint32 const category = stored.CategoryId;
                     auto roles = LfgListRoles.find(_player->GetGUID());
-                    LfgListedHook(_player, activities, roles != LfgListRoles.end() ? roles->second : 0);
+                    LfgListedHook(_player, category, activities, roles != LfgListRoles.end() ? roles->second : 0);
                 }
                 break;
             }

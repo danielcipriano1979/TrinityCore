@@ -1570,9 +1570,10 @@ void ForeverBotMgr::UpdatePartyBot(ForeverBot& bot, uint32 diff, std::vector<Obj
 // ---------------------------------------------------------------------------------------------------------------------
 // Group Finder runs: the player posts a group for a dungeon in the game's own window, the bots fill it
 // ---------------------------------------------------------------------------------------------------------------------
-bool ForeverBotMgr::StartDungeonRun(Player* owner, std::vector<uint32> const& activities, uint8 roles)
+bool ForeverBotMgr::StartDungeonRun(Player* owner, uint32 category, std::vector<uint32> const& activities, uint8 roles)
 {
-    if (activities.empty() || IsBot(owner->GetGUID()))
+    // GroupFinderCategory 2 = Dungeons (114 raids, 116 quests and zones, 118 battlegrounds, 120 custom)
+    if (category != 2 || activities.empty() || IsBot(owner->GetGUID()))
         return false;
 
     // the first ticked activity that is a known dungeon (world.forever_groupfinder_dungeon, read here: it is tiny and rare)
@@ -1582,7 +1583,11 @@ bool ForeverBotMgr::StartDungeonRun(Player* owner, std::vector<uint32> const& ac
     QueryResult result = WorldDatabase.Query(Trinity::StringFormat(
         "SELECT ActivityID, PortLocID, Name FROM forever_groupfinder_dungeon WHERE ActivityID IN ({}) ORDER BY FIELD(ActivityID, {}) LIMIT 1", ids, ids).c_str());
     if (!result)
+    {
+        // e.g. the new Forever dungeons, still empty on the server: say so instead of leaving the player waiting
+        ChatHandler(owner->GetSession()).SendSysMessage("ForeverBots: no bot run for this dungeon yet. Your group stays listed; pick another dungeon for a run with bots.");
         return false;
+    }
 
     Field* fields = result->Fetch();
     std::string const name = fields[2].GetString();
