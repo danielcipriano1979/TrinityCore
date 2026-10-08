@@ -139,6 +139,9 @@ Unit* ForeverBotAI::SelectTankTarget(BotContext& ctx)
         Unit* victim = enemy->GetVictim();
         if (!victim || victim == me || !victim->IsPlayer())
             continue;
+        // raids have several tanks: a mob on another tank is held, not loose
+        if (ctx.RoleOf(victim->ToPlayer()) == BotRole::Tank)
+            continue;
         bool const onHealer = ctx.IsHealer(victim->ToPlayer());
         if (!loose || (onHealer && !looseOnHealer) || (onHealer == looseOnHealer && me->GetDistance(enemy) < me->GetDistance(loose)))
         {
@@ -180,16 +183,22 @@ Unit* ForeverBotAI::SelectTankTarget(BotContext& ctx)
 // ---------------------------------------------------------------------------------------------------------------------
 void ForeverBotAI::ProposeTank(BotContext& ctx, Unit* target)
 {
-    ctx.Party->Tank = me->GetGUID();
+    // the main tank is the first tank of the group (BuildContext); a lone tank that the group does not list is it
+    if (!ctx.Tank)
+        ctx.Party->Tank = me->GetGUID();
 
-    // taunt what got loose
+    // taunt what got loose: on a player that is not a tank (raids have several, never taunt off each other)
+    auto isLoose = [&](Unit const* victim)
+    {
+        return victim && victim != me && victim->IsPlayer() && ctx.RoleOf(victim->ToPlayer()) != BotRole::Tank;
+    };
     uint32 loose = 0;
     for (Unit* enemy : ctx.Enemies)
-        if (Unit* victim = enemy->GetVictim(); victim && victim != me && victim->IsPlayer())
+        if (isLoose(enemy->GetVictim()))
             ++loose;
 
     Unit* victim = target->GetVictim();
-    if (victim && victim != me && victim->IsPlayer())
+    if (isLoose(victim))
     {
         for (BotSpell const* taunt : _spells.Of(KIND_TAUNT))
         {

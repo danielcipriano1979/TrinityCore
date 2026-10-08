@@ -141,6 +141,8 @@ public:
         std::vector<std::pair<uint8, BotRole>> const& members);
     void StopTestParties();
     static uint32 TanksFor(uint32 size);
+    // the roles a player ticked for their last Group Finder run (lfg::LfgRoles mask, 0 = none)
+    uint8 GetOwnerRoles(ObjectGuid owner) const { auto itr = _ownerRoles.find(owner); return itr != _ownerRoles.end() ? itr->second : 0; }
     static uint32 HealersFor(uint32 size);
 
     // Group Finder (the game's own window): the player posted a group for a dungeon or a raid. Takes them to its entrance,
@@ -202,6 +204,7 @@ private:
 
     std::unordered_map<ObjectGuid, ForeverBot> _bots;
     std::unordered_map<ObjectGuid, DungeonRun> _dungeonRuns;
+    std::unordered_map<ObjectGuid, uint8> _ownerRoles;
     uint32 _accountId = 0;
     uint32 _worldTarget = 0;
     uint32 _balanceTimer = 0;

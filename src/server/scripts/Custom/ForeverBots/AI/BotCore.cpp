@@ -3,6 +3,8 @@
  */
 
 #include "BotAI.h"
+#include "Group.h"
+#include "LFG.h"
 #include "Log.h"
 #include "Player.h"
 #include "SpellAuraDefines.h"
@@ -368,6 +370,19 @@ namespace ForeverBots
             return bot->Role;
         if (Party && member->GetGUID() == Party->Tank)
             return BotRole::Tank;
+        // real players: the role they ticked in the Group Finder (ForeverBotMgr::UpdateDungeonRuns) or set in the group
+        if (Group const* group = member->GetGroup())
+        {
+            uint8 roles = sForeverBotMgr->GetOwnerRoles(member->GetGUID());
+            if (!(roles & (lfg::PLAYER_ROLE_TANK | lfg::PLAYER_ROLE_HEALER | lfg::PLAYER_ROLE_DAMAGE)))
+                roles = group->GetLfgRoles(member->GetGUID());
+            if (roles & lfg::PLAYER_ROLE_TANK)
+                return BotRole::Tank;
+            if (roles & lfg::PLAYER_ROLE_HEALER)
+                return BotRole::Heal;
+            if (roles & lfg::PLAYER_ROLE_DAMAGE)
+                return BotRole::Dps;
+        }
         // real players: a pure healer class counts as healer only if it isn't the tank
         return member->GetClass() == CLASS_PRIEST ? BotRole::Heal : BotRole::Dps;
     }

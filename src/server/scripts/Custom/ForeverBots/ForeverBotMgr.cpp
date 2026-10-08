@@ -1721,6 +1721,8 @@ void ForeverBotMgr::UpdateDungeonRuns(uint32 diff)
                 for (Group::MemberSlot const& slot : group->GetMemberSlots())
                     if (slot.guid != owner->GetGUID() && !IsBot(slot.guid))
                         ++members;
+            // the bots read it in BotContext::RoleOf: a player who ticked tank is the group's tank, they wait for their pulls
+            _ownerRoles[owner->GetGUID()] = run.Roles;
 
             // tanks first, then healers, then damage dealers: a group cut short by an error still has its tank and healer
             bool const horde = owner->GetTeamId() == TEAM_HORDE;
