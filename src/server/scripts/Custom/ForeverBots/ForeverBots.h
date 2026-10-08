@@ -62,6 +62,7 @@ struct ForeverBot
     bool Creating = false;          // new character still being saved
     bool CreateFailed = false;
     uint32 DeadTimer = 0;
+    uint32 CorpseRunTimer = 0;      // wipe: time since this bot released to run back to the dungeon
     bool SummonRequested = false;
 
     // world bots

@@ -539,6 +539,7 @@ void ForeverBotAI::ProposeResurrect(BotContext& ctx)
     std::vector<BotSpell const*> spells = _spells.Of(KIND_RESURRECT);
     if (spells.empty())
         return;
+    Player* farthest = nullptr;
     for (Player* dead : ctx.Dead)
     {
         if (dead->IsResurrectRequested())
@@ -550,6 +551,26 @@ void ForeverBotAI::ProposeResurrect(BotContext& ctx)
                     Trinity::StringFormat("{} is dead", dead->GetName()));
                 return;
             }
+        if (!farthest)
+            farthest = dead;
+    }
+
+    // nobody in reach (after a wipe the corpses lie where the fight was): go to the first one. Bots walk in straight
+    // lines, so a corpse far away or behind a wall is reached with a short teleport, like the regroup with the owner.
+    if (farthest && !ctx.GroupInCombat && !me->IsNonMeleeSpellCast(false))
+    {
+        Player* dead = farthest;
+        _brain.Propose(R_HEAL + 14, "go to the dead", dead, [this, dead]()
+        {
+            if (!me->IsWithinDistInMap(dead, 60.0f) || !me->IsWithinLOSInMap(dead))
+            {
+                me->GetMotionMaster()->Clear();
+                me->NearTeleportTo(dead->GetNearPosition(3.0f, frand(0.0f, 2.0f * float(M_PI))));
+            }
+            else
+                me->GetMotionMaster()->MovePoint(3, dead->GetNearPosition(3.0f, me->GetAbsoluteAngle(dead) + float(M_PI)));
+            return true;
+        }, Trinity::StringFormat("{} is dead and out of reach", dead->GetName()));
     }
 }
 

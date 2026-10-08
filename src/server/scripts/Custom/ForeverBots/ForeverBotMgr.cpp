@@ -44,7 +44,22 @@ namespace
     constexpr char const* WorldAccountName = "FOREVERWORLD";
     constexpr uint32 MaxBotsPerOwner = 4;
     constexpr uint32 MaxWorldBots = 200;
-    constexpr uint32 ResurrectDelay = 15000;          // time for a healer to resurrect it first
+    constexpr uint32 ResurrectDelay = 15000;          // dead bot, nobody in the group can resurrect: stands up after this
+    constexpr uint32 ResurrectByGroupDelay = 90000;   // ...while a member that can resurrect is alive: their job first
+    constexpr uint32 CorpseRunTime = 40000;           // wipe: the run from the graveyard back into the dungeon
+
+    // classes with an out of combat resurrection and the level they learn it at (the druid only has Rebirth)
+    bool CanResurrectOthers(Player const* player)
+    {
+        switch (player->GetClass())
+        {
+            case CLASS_PRIEST:  return player->GetLevel() >= 10;
+            case CLASS_PALADIN:
+            case CLASS_SHAMAN:  return player->GetLevel() >= 12;
+            case CLASS_DRUID:   return player->GetLevel() >= 20;
+            default:            return false;
+        }
+    }
     constexpr uint32 WorldResurrectDelay = 20000;
     constexpr float RegroupDistance = 120.0f;
     constexpr uint32 DungeonRunTeleportDelay = 1500;        // ms between posting a group in the Group Finder and the teleport
@@ -1532,8 +1547,13 @@ void ForeverBotMgr::UpdatePartyBot(ForeverBot& bot, uint32 diff, std::vector<Obj
     if (!owner->IsInWorld() || owner->IsBeingTeleported())
         return;
 
+    // The owner died in the dungeon, released and is running back as a ghost: the bots stay inside, where they are
+    // (a wipe is handled below).
+    bool const sameMap = botPlayer->GetMapId() == owner->GetMapId() && botPlayer->GetInstanceId() == owner->GetInstanceId();
+    bool const ownerRunningBack = !sameMap && !owner->IsAlive() && botPlayer->GetMap()->IsDungeon();
+
     // the owner went to another map or instance: log the bot out and back in at the owner's position
-    if (botPlayer->GetMapId() != owner->GetMapId() || botPlayer->GetInstanceId() != owner->GetInstanceId())
+    if (!sameMap && !ownerRunningBack)
     {
         Relog(bot, owner);
         return;
@@ -1544,7 +1564,68 @@ void ForeverBotMgr::UpdatePartyBot(ForeverBot& bot, uint32 diff, std::vector<Obj
         if (!bot.DeadTimer)
             ++bot.Deaths;
         bot.DeadTimer += diff;
-        if (bot.DeadTimer >= ResurrectDelay && owner->IsAlive() && !owner->IsInCombat())
+
+        // who is left on this map: anybody alive, and anybody alive that can resurrect
+        bool anyoneAlive = false, resurrectorAlive = false;
+        Player* runner = nullptr;           // wipe: the one that runs back, a resurrecting healer when the group has one
+        int32 runnerScore = -1;
+        if (Group const* group = botPlayer->GetGroup())
+        {
+            for (GroupReference const& ref : group->GetMembers())
+            {
+                Player* member = ref.GetSource();
+                if (!member || !member->IsInWorld() || !member->IsInMap(botPlayer))
+                    continue;
+                if (member->IsAlive())
+                {
+                    anyoneAlive = true;
+                    resurrectorAlive |= IsBot(member->GetGUID()) && CanResurrectOthers(member);
+                    continue;
+                }
+                ForeverBot const* other = GetBot(member->GetGUID());
+                if (!other)
+                    continue;
+                int32 const score = (CanResurrectOthers(member) ? 2 : 0) + (other->Role == BotRole::Heal ? 1 : 0);
+                if (score > runnerScore || (score == runnerScore && runner && member->GetGUID() < runner->GetGUID()))
+                {
+                    runnerScore = score;
+                    runner = member;
+                }
+            }
+        }
+
+        if (!anyoneAlive)
+        {
+            // Wipe. One bot does the corpse run: it releases, and after the time the run takes it is alive again at the
+            // dungeon's entrance. Its AI then goes to the others and resurrects them (ProposeResurrect); a runner that
+            // cannot resurrect at least lets the ResurrectDelay rule below stand the others up once the owner is back.
+            if (runner != botPlayer)
+                return;
+            bot.CorpseRunTimer += diff;
+            if (bot.CorpseRunTimer < CorpseRunTime)
+                return;
+
+            botPlayer->ResurrectPlayer(0.5f);
+            botPlayer->SpawnCorpseBones();
+            if (AreaTriggerTeleport const* entrance = botPlayer->GetMap()->IsDungeon() ? sObjectMgr->GetMapEntranceTrigger(botPlayer->GetMapId()) : nullptr)
+            {
+                botPlayer->GetMotionMaster()->Clear();
+                botPlayer->NearTeleportTo(entrance->Loc);
+                bot.Session->FinishBotTeleport();
+            }
+            TC_LOG_INFO("misc", "ForeverBots: wipe of {}'s group, {} ran back", owner->GetName(), botPlayer->GetName());
+            if (!ownerRunningBack)
+                ChatHandler(owner->GetSession()).SendSysMessage(Trinity::StringFormat("ForeverBots: {} ran back and will resurrect the group.", botPlayer->GetName()));
+            bot.DeadTimer = 0;
+            bot.CorpseRunTimer = 0;
+            return;
+        }
+        bot.CorpseRunTimer = 0;
+
+        // somebody is alive: a member that can resurrect does it (bot AI); without one, or if that takes too long, the
+        // bot stands up next to the owner
+        uint32 const delay = resurrectorAlive ? ResurrectByGroupDelay : ResurrectDelay;
+        if (bot.DeadTimer >= delay && sameMap && owner->IsAlive() && !owner->IsInCombat())
         {
             botPlayer->ResurrectPlayer(0.5f);
             botPlayer->SpawnCorpseBones();
@@ -1554,6 +1635,9 @@ void ForeverBotMgr::UpdatePartyBot(ForeverBot& bot, uint32 diff, std::vector<Obj
         return;
     }
     bot.DeadTimer = 0;
+    bot.CorpseRunTimer = 0;
+    if (!sameMap)
+        return;                             // alive inside while the owner runs back: wait there
 
     // the owner leveled up: catch up (level, spells, gear) through a relog, out of sight
     if (botPlayer->GetLevel() < owner->GetLevel() && !botPlayer->IsInCombat() && !owner->IsInCombat())
