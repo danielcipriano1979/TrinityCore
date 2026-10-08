@@ -110,7 +110,8 @@ public:
     static ForeverBotMgr* instance();
 
     // recruits a bot of that class next to the owner and puts it in the owner's group; returns an error or empty
-    std::string AddBot(Player* owner, uint8 classId, BotRole role);
+    // maxBots: how many bots the owner may have (0 = the default, a party of five; raids of the Group Finder ask for more)
+    std::string AddBot(Player* owner, uint8 classId, BotRole role, uint32 maxBots = 0);
     void RemoveBot(ObjectGuid guid);
     void RemoveBotsOf(ObjectGuid owner);
     void RemoveAll();
@@ -139,10 +140,13 @@ public:
     std::string StartTestParty(uint32 mapId, Position const& pos, uint8 level, uint8 team,
         std::vector<std::pair<uint8, BotRole>> const& members);
     void StopTestParties();
+    static uint32 TanksFor(uint32 size);
+    static uint32 HealersFor(uint32 size);
 
-    // Group Finder (the game's own window): the player posted a group for a dungeon. Takes them to its entrance, inside, and
-    // recruits the bots the group is missing (one tank, one healer, damage dealers up to five members). roles = what the
-    // player ticked (lfg::LfgRoles). Returns false when none of the activities is a dungeon of forever_groupfinder_dungeon.
+    // Group Finder (the game's own window): the player posted a group for a dungeon or a raid. Takes them to its entrance,
+    // inside, and recruits the bots the group is missing, up to the size of the activity (5, 10, 20, 40: tanks, healers, the
+    // rest damage dealers). roles = what the player ticked (lfg::LfgRoles). Returns false when none of the activities is in
+    // forever_groupfinder_dungeon.
     bool StartDungeonRun(Player* owner, uint32 category, std::vector<uint32> const& activities, uint8 roles);
 
     void Update(uint32 diff);
@@ -183,7 +187,18 @@ private:
 
     // a Group Finder run on its way: the owner is teleported a moment after posting the group, the bots are recruited once
     // they arrive
-    struct DungeonRun { WorldLocation Entrance; uint8 Roles = 0; uint32 Timer = 0; bool Teleported = false; };
+    struct DungeonRun
+    {
+        WorldLocation Entrance;
+        uint8 Roles = 0;
+        uint8 Size = 5;                                         // members the group is filled up to
+        uint32 Timer = 0;
+        bool Teleported = false;
+        bool Planned = false;                                   // Recruits was built (the owner is inside)
+        std::vector<std::pair<uint8, BotRole>> Recruits;        // still to log in, a few per second
+        uint32 RecruitTimer = 0;
+        uint32 Added = 0;
+    };
 
     std::unordered_map<ObjectGuid, ForeverBot> _bots;
     std::unordered_map<ObjectGuid, DungeonRun> _dungeonRuns;

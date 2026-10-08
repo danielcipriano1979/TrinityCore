@@ -192,14 +192,21 @@ public:
         }
         else
         {
-            handler->SendSysMessage("Usage: .bottest party rfc [level] | party tele <name> [level] [alliance]");
+            handler->SendSysMessage("Usage: .bottest party rfc [level] | party tele <name> [level] [alliance] [size]");
             return true;
         }
         if (words.size() > next)
             if (Optional<uint32> value = Trinity::StringTo<uint32>(words[next]))
                 level = uint8(std::clamp<uint32>(*value, 1, 60));
-        if (words.size() > next + 1 && words[next + 1] == "alliance")
-            team = TEAM_ALLIANCE;
+        // then, in any order: "alliance" and the group size (10, 20, 40: a raid group like the Group Finder builds)
+        uint32 size = 5;
+        for (size_t i = next + 1; i < words.size(); ++i)
+        {
+            if (words[i] == "alliance")
+                team = TEAM_ALLIANCE;
+            else if (Optional<uint32> value = Trinity::StringTo<uint32>(words[i]))
+                size = std::clamp<uint32>(*value, 5, 40);
+        }
 
         // tank (leader), healer and three damage dealers
         std::vector<std::pair<uint8, BotRole>> members =
@@ -207,6 +214,18 @@ public:
             { CLASS_WARRIOR, BotRole::Tank }, { CLASS_PRIEST, BotRole::Heal }, { CLASS_MAGE, BotRole::Dps },
             { CLASS_ROGUE, BotRole::Dps }, { team == TEAM_HORDE ? CLASS_WARLOCK : CLASS_HUNTER, BotRole::Dps }
         };
+        if (size > 5)
+        {
+            members.clear();
+            uint8 const healers[] = { CLASS_PRIEST, CLASS_PRIEST, CLASS_DRUID, uint8(team == TEAM_HORDE ? CLASS_SHAMAN : CLASS_PALADIN) };
+            uint8 const damage[] = { CLASS_MAGE, CLASS_ROGUE, CLASS_HUNTER, CLASS_WARLOCK };
+            for (uint32 i = 0; i < ForeverBotMgr::TanksFor(size); ++i)
+                members.emplace_back(uint8(CLASS_WARRIOR), BotRole::Tank);
+            for (uint32 i = 0; i < ForeverBotMgr::HealersFor(size); ++i)
+                members.emplace_back(healers[i % std::size(healers)], BotRole::Heal);
+            for (uint32 i = 0; members.size() < size; ++i)
+                members.emplace_back(damage[i % std::size(damage)], BotRole::Dps);
+        }
         std::string error = sForeverBotMgr->StartTestParty(mapId, pos, level, team, members);
         handler->SendSysMessage(error.empty() ? Trinity::StringFormat("ForeverBots: test party (level {}) logging in on map {}.", level, mapId)
             : Trinity::StringFormat("ForeverBots: {}", error));
