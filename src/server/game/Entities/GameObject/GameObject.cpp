@@ -3024,13 +3024,20 @@ void GameObject::Use(Unit* user, bool ignoreCastInProgress /*= false*/)
                     uint32 fishingSpellId = GetSpellId();
                     auto giveFishLoot = [&]
                     {
-                        if (!IsForeverAutoFishing() || !player->GetFreeInventorySlotCount())
+                        if (!IsForeverAutoFishing())
                         {
                             player->SendLoot(*m_loot);
                             return;
                         }
 
-                        m_loot->AutoStore(player, NULL_BAG, NULL_SLOT, true);
+                        // What fits goes to the bags: with no free slot a fish still joins a stack (the check used to be
+                        // "a free slot", so with full bags every catch opened the loot window and the fishing stopped).
+                        // Only what really does not fit opens the normal loot window.
+                        if (!m_loot->AutoStore(player, NULL_BAG, NULL_SLOT, true))
+                        {
+                            player->SendLoot(*m_loot);
+                            return;
+                        }
                         SetLootState(GO_JUST_DEACTIVATED);
                         if (!fishingSpellId)
                             return;
