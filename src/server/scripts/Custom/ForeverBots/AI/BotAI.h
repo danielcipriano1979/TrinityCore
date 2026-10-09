@@ -257,6 +257,7 @@ private:
     void ChaseTarget(Unit* target, float minRange, float maxRange, Optional<float> angle);
     void CheckStuck(Unit* target, float wantedRange, uint32 elapsed);
     void SnapToGround();                                    // a bot standing above or under the floor (straight moves in caves)
+    bool StepAlongPath(Position const& dest);               // a wall in the way: walk to the next corner of the navmesh path
     void Wander(ForeverBot const& data, uint32 elapsed);
     void Rest(BotContext& ctx, uint32 elapsed);
     void ProposeConsumables(BotContext& ctx);               // healing and mana potions in a fight
@@ -284,6 +285,7 @@ private:
     uint32 _autoShotRetry = 0;                              // next Auto Shot start after a refusal
     uint32 _snapUntil = 0;                                  // stepping back onto the floor: no other movement until then
     uint32 _potionReadyAt = 0;                              // potions share a two minute cooldown
+    Position _stepCorner;                                   // the corner StepAlongPath is walking to
 
     // stuck detection
     ObjectGuid _stuckTarget;

@@ -11553,6 +11553,20 @@ void Unit::SetMeleeAnimKitId(uint16 animKitId)
                 {
                     Group* group = !groups.empty() ? *groups.begin() : nullptr;
                     Player* looter = group ? ASSERT_NOTNULL(ObjectAccessor::GetPlayer(*creature, group->GetLooterGuid())) : tappers[0];
+                    // Forever bots: this loot belongs to one member only (Classic dungeon creatures are no dungeon
+                    // encounters for the core). A bot never loots: with four bots, four kills out of five gave the player
+                    // nothing, bosses included. A real player that tapped the creature gets it instead.
+                    if (looter->GetSession()->IsBotSession())
+                    {
+                        for (Player* tapper : tappers)
+                        {
+                            if (!tapper->GetSession()->IsBotSession() && (!group || tapper->GetGroup() == group))
+                            {
+                                looter = tapper;
+                                break;
+                            }
+                        }
+                    }
 
                     Loot* loot = new Loot(creature->GetMap(), creature->GetGUID(), LOOT_CORPSE, dungeonEncounter ? group : nullptr);
 

@@ -46,8 +46,53 @@ bool ForeverBotAI::IsChasing(Unit* target) const
     return chase && chase->GetTarget() == target;
 }
 
+// Bots move in straight lines (the 1.60 client crashes on server-driven multi-point paths for players), which takes them
+// through walls, floors and ceilings wherever the way is not straight. On a map with a navmesh (mmaps), when the real
+// path to the destination has corners, the bot walks to the first corner only - one straight leg - and asks again on its
+// next thoughts until the rest of the way is a straight line. Returns false when there is nothing to walk around (or no
+// navmesh): the caller then moves as before.
+bool ForeverBotAI::StepAlongPath(Position const& dest)
+{
+    if (me->GetExactDist(&dest) < 3.0f)
+        return false;
+
+    PathGenerator path(me);
+    path.SetUseStraightPath(true);          // corners only, not a point every few yards
+    me->ClearUnitState(UNIT_STATE_IGNORE_PATHFINDING);
+    bool const ok = path.CalculatePath(dest.GetPositionX(), dest.GetPositionY(), dest.GetPositionZ());
+    me->AddUnitState(UNIT_STATE_IGNORE_PATHFINDING);
+    if (!ok || (path.GetPathType() & (PATHFIND_NOPATH | PATHFIND_SHORTCUT)))
+        return false;
+
+    Movement::PointsArray const& points = path.GetPath();
+    if (points.size() <= 2)
+        return false;                       // start and end: the straight line is the path
+
+    // the first corner worth walking to (the path can start with a point right under the bot)
+    size_t index = 1;
+    while (index + 1 < points.size() && me->GetExactDist(points[index].x, points[index].y, points[index].z) < 1.5f)
+        ++index;
+    if (index + 1 >= points.size())
+        return false;
+
+    G3D::Vector3 const& corner = points[index];
+    MotionMaster* motion = me->GetMotionMaster();
+    if (me->isMoving() && motion->GetCurrentMovementGeneratorType() == POINT_MOTION_TYPE
+        && _stepCorner.GetExactDist(corner.x, corner.y, corner.z) < 1.0f)
+        return true;                        // already on its way there
+
+    _stepCorner.Relocate(corner.x, corner.y, corner.z);
+    _chaseMin = _chaseMax = -1.0f;          // a chase that was running is gone: ChaseTarget starts it again afterwards
+    motion->Clear();
+    motion->MovePoint(4, corner.x, corner.y, corner.z);
+    return true;
+}
+
 void ForeverBotAI::ChaseTarget(Unit* target, float minRange, float maxRange, Optional<float> angle)
 {
+    if (StepAlongPath(target->GetPosition()))
+        return;
+
     // a chase already running is only kept when it wants the same spot: "get closer" (no line of sight, mob on the
     // healer) asks for a smaller range on the same target
     if (IsChasing(target) && _chaseMin == minRange && _chaseMax == maxRange && _chaseAngle == angle)
@@ -266,6 +311,13 @@ void ForeverBotAI::MoveOutOfCombat(BotContext& ctx)
             TC_LOG_INFO("server.foreverbots", "[BotAI] Bot={} couldn't follow {} ({:.0f} yd), regrouped", me->GetName(), ctx.Leader->GetName(), dist);
         return;
     }
+    // a wall or a floor between me and the leader: around it, corner by corner
+    if (dist > 6.0f && StepAlongPath(ctx.Leader->GetPosition()))
+    {
+        _followStuckTime = 0;
+        return;
+    }
+
     if (_followStuckTime >= 4000)
     {
         if (motion->GetCurrentMovementGeneratorType() != POINT_MOTION_TYPE)
