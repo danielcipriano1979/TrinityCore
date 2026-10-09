@@ -1174,6 +1174,16 @@ void Group::UpdateLooterGuid(WorldObject* pLootedObject, bool ifneed)
         }
     }
 
+    // Forever bots: no real player in range (a bot-only test party, the owner away): a bot is the looter after all, as
+    // before. An empty looter here crashed Unit::Kill.
+    if (!pNewLooter)
+    {
+        for (member_citerator itr = m_memberSlots.begin(); itr != m_memberSlots.end() && !pNewLooter; ++itr)
+            if (Player* player = ObjectAccessor::FindPlayer(itr->guid))
+                if (player->IsAtGroupRewardDistance(pLootedObject))
+                    pNewLooter = player;
+    }
+
     if (pNewLooter)
     {
         if (oldLooterGUID != pNewLooter->GetGUID())

@@ -11552,7 +11552,11 @@ void Unit::SetMeleeAnimKitId(uint16 animKitId)
                 else if (!tappers.empty())
                 {
                     Group* group = !groups.empty() ? *groups.begin() : nullptr;
-                    Player* looter = group ? ASSERT_NOTNULL(ObjectAccessor::GetPlayer(*creature, group->GetLooterGuid())) : tappers[0];
+                    // Forever: no assert on the group's looter (it can be empty or on another map, e.g. after nobody was
+                    // in range for the previous kill: that took the whole server down); a tapper gets the loot then
+                    Player* looter = group ? ObjectAccessor::GetPlayer(*creature, group->GetLooterGuid()) : nullptr;
+                    if (!looter)
+                        looter = tappers[0];
                     // Forever bots: this loot belongs to one member only (Classic dungeon creatures are no dungeon
                     // encounters for the core). A bot never loots: with four bots, four kills out of five gave the player
                     // nothing, bosses included. A real player that tapped the creature gets it instead.
