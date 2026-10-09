@@ -1275,6 +1275,16 @@ void ForeverBotMgr::PrepareBeforeWorld(ObjectGuid guid, Player* botPlayer)
         sGroupMgr->AddGroup(group);
     }
 
+    // Group Loot: uncommon items and better are rolled for (the bots vote after the players, UpdateLootRolls), the rest
+    // goes to the looter of the kill, always a real player. The core's default, Personal Loot, gives every kill to one
+    // member. ForeverBots.GroupLoot = 0 keeps the default (all the dungeon loot to the real players, no rolls).
+    if (group->GetLootMethod() == PERSONAL_LOOT && sConfigMgr->GetBoolDefault("ForeverBots.GroupLoot", true))
+    {
+        group->SetLootMethod(GROUP_LOOT);
+        group->SetLootThreshold(ITEM_QUALITY_UNCOMMON);
+        group->SendUpdate();
+    }
+
     if (botPlayer->GetGroup() && botPlayer->GetGroup() != group)
         botPlayer->RemoveFromGroup();
 

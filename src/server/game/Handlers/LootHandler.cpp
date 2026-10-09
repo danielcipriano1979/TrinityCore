@@ -161,7 +161,8 @@ void WorldSession::HandleLootMoneyOpcode(WorldPackets::Loot::LootMoney& /*packet
                 if (!loot->HasAllowedLooter(member->GetGUID()))
                     continue;
 
-                if (player->IsAtGroupRewardDistance(member))
+                // Forever bots take no share: with four of them the player got a fifth of the money
+                if (player->IsAtGroupRewardDistance(member) && (member == player || !member->GetSession()->IsBotSession()))
                     playersNear.push_back(member);
             }
 

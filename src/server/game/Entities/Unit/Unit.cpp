@@ -11568,7 +11568,12 @@ void Unit::SetMeleeAnimKitId(uint16 animKitId)
                         }
                     }
 
-                    Loot* loot = new Loot(creature->GetMap(), creature->GetGUID(), LOOT_CORPSE, dungeonEncounter ? group : nullptr);
+                    // Forever: a group that uses a classic loot method (Group Loot, Need Before Greed, Master Looter,
+                    // Round Robin) shares this loot the classic way - items of the threshold quality and above are rolled
+                    // for, the rest and the corpse belong to the looter. With Personal Loot (the core's default) it stays
+                    // the looter's alone.
+                    bool const sharedLoot = group && group->GetLootMethod() != PERSONAL_LOOT && group->GetLootMethod() != FREE_FOR_ALL;
+                    Loot* loot = new Loot(creature->GetMap(), creature->GetGUID(), LOOT_CORPSE, (dungeonEncounter || sharedLoot) ? group : nullptr);
 
                     if (uint32 lootid = creature->GetLootId())
                         loot->FillLoot(lootid, LootTemplates_Creature, looter, dungeonEncounter != nullptr, false, creature->GetLootMode(), ItemBonusMgr::GetContextForPlayer(creature->GetMap()->GetMapDifficulty(), looter));
@@ -11579,7 +11584,10 @@ void Unit::SetMeleeAnimKitId(uint16 animKitId)
                     if (group)
                         loot->NotifyLootList(creature->GetMap());
 
-                    creature->m_personalLoot[looter->GetGUID()].reset(loot);   // trash mob loot is personal, generated with round robin rules
+                    if (sharedLoot)
+                        creature->m_loot.reset(loot);
+                    else
+                        creature->m_personalLoot[looter->GetGUID()].reset(loot);   // trash mob loot is personal, generated with round robin rules
 
                     // Update round robin looter only if the creature had loot
                     if (!loot->isLooted())
