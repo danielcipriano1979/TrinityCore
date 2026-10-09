@@ -303,7 +303,9 @@ void ForeverBotAI::MoveOutOfCombat(BotContext& ctx)
     else
         _followStuckTime = 0;
     _followLastDist = dist;
-    if (_followStuckTime >= 12000)
+    // (sooner in a dungeon, and at once when the leader is out of sight there: the way back is around corners)
+    bool const dungeon = me->GetMap()->IsDungeon();
+    if (_followStuckTime >= (dungeon ? (me->IsWithinLOSInMap(ctx.Leader) ? 8000u : 5000u) : 12000u))
     {
         _followStuckTime = 0;
         ctx.Data->SummonRequested = true;       // the manager (world thread) brings it next to its owner

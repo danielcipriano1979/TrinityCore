@@ -65,6 +65,7 @@ namespace
     }
     constexpr uint32 WorldResurrectDelay = 20000;
     constexpr float RegroupDistance = 120.0f;
+    constexpr float DungeonRegroupDistance = 45.0f;
     constexpr uint32 DungeonRunTeleportDelay = 1500;        // ms between posting a group in the Group Finder and the teleport
     constexpr uint32 DungeonRunRecruitInterval = 350;       // ms between two bot logins of a Group Finder run
     constexpr uint32 BalanceInterval = 5000;
@@ -1849,7 +1850,8 @@ void ForeverBotMgr::UpdatePartyBot(ForeverBot& bot, uint32 diff, std::vector<Obj
     }
 
     // bots have no mounts: while the owner rides, they catch up much sooner
-    float const regroup = owner->IsMounted() ? 40.0f : RegroupDistance;
+    // in a dungeon a bot left behind is behind walls and corners, not on open ground: it is brought back much sooner
+    float const regroup = owner->IsMounted() ? 40.0f : (botPlayer->GetMap()->IsDungeon() ? DungeonRegroupDistance : RegroupDistance);
     if (bot.SummonRequested || (!botPlayer->IsInCombat() && !owner->IsInCombat() && !botPlayer->IsWithinDistInMap(owner, regroup)))
     {
         bot.SummonRequested = false;
