@@ -17,6 +17,7 @@
 
 #include "PartyPackets.h"
 #include "CharacterCache.h"
+#include "ClassicOpcodes.h"
 #include "Group.h"
 #include "PacketOperators.h"
 #include "Pet.h"
@@ -492,7 +493,11 @@ ByteBuffer& operator<<(ByteBuffer& data, LeaverInfo const& leaverInfo)
 ByteBuffer& operator<<(ByteBuffer& data, PartyPlayerInfo const& playerInfo)
 {
     data << SizedString::BitsSize<6>(playerInfo.Name);
-    data << SizedCString::BitsSize<6>(playerInfo.VoiceStateID);
+    // client 70338 reads 9 bits for the voice state length (member reader rva 0x80368E: 6 + 9 + 3 bits = 3 bytes)
+    if (ClassicOpcodes::IsBuild70338OrLater())
+        data << SizedCString::BitsSize<9>(playerInfo.VoiceStateID);
+    else
+        data << SizedCString::BitsSize<6>(playerInfo.VoiceStateID);
     data << Bits<1>(playerInfo.Connected);
     data << Bits<1>(playerInfo.FromSocialQueue);
     data << Bits<1>(playerInfo.VoiceChatSilenced);
@@ -569,10 +574,18 @@ WorldPacket const* PartyUpdate::Write()
     _worldPacket << uint8(PartyType);
     _worldPacket << int32(MyIndex);
     _worldPacket << PartyGUID;
+    // client 70338 (reader rva 0x803500): one more byte after the sequence number and a uint64 after the ping restriction.
+    // Sent in the old layout the client read past the end of the packet and crashed (access violation in the packed guid
+    // reader) as soon as the group showed up.
+    bool const build70338 = ClassicOpcodes::IsBuild70338OrLater();
     _worldPacket << uint32(SequenceNum);
+    if (build70338)
+        _worldPacket << uint8(0);
     _worldPacket << LeaderGUID;
     _worldPacket << uint8(LeaderFactionGroup);
     _worldPacket << int32(PingRestriction);
+    if (build70338)
+        _worldPacket << uint64(0);
     _worldPacket << Size<uint32>(PlayerList);
 
     for (PartyPlayerInfo const& playerInfos : PlayerList)
