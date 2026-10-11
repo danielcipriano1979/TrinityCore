@@ -6924,10 +6924,9 @@ void ActivePlayerData::WriteUpdate(Mask const& changesMask, ByteBuffer& data, Pl
         {
             data << uint8(TransmogCostMinScalingLevel);
         }
-        if (changesMask[116])
-        {
-            data << int32(PetSpellPower);
-        }
+        // Classic 1.60 has no PetSpellPower: ClassicActivePlayerDataBit drops its bit from the header, so the value must not be
+        // written either (a hunter logging in with a pet got 4 extra bytes in the values update and the client asserted
+        // "Expected 89 bytes, but received 85 bytes" and hung on the loading screen)
         if (changesMask[117])
         {
             data << float(UiHitModifier);
