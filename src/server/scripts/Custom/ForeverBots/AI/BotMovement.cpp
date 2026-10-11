@@ -62,7 +62,39 @@ bool ForeverBotAI::StepAlongPath(Position const& dest)
     bool const ok = path.CalculatePath(dest.GetPositionX(), dest.GetPositionY(), dest.GetPositionZ());
     me->AddUnitState(UNIT_STATE_IGNORE_PATHFINDING);
     if (!ok || (path.GetPathType() & (PATHFIND_NOPATH | PATHFIND_SHORTCUT)))
-        return false;
+    {
+        // the navmesh has no way there (the bot or the destination is off it, a closed door, another floor). With a clear
+        // line the straight move is all there is; without one the straight move is the walk through the wall the players
+        // saw in Shadowfang Keep (and what took the tank into the next rooms): stand still instead, and after a few
+        // seconds regroup on the owner.
+        if (me->IsWithinLOS(dest.GetPositionX(), dest.GetPositionY(), dest.GetPositionZ() + 1.0f, LINEOFSIGHT_ALL_CHECKS, VMAP::ModelIgnoreFlags::M2))
+        {
+            _pathBlockedTime = 0;
+            return false;
+        }
+        ForeverBot* data = GetBotData();
+        bool const debug = data && (data->Debug || sForeverBotMgr->IsGlobalDebug());
+        if (debug && !_pathBlockedTime)
+            TC_LOG_INFO("server.foreverbots", "[BotAI] Bot={} no path and no line of sight to ({:.0f}, {:.0f}, {:.0f}), {:.0f} yd, path type {:#x}: not walking through",
+                me->GetName(), dest.GetPositionX(), dest.GetPositionY(), dest.GetPositionZ(), me->GetExactDist(&dest), uint32(path.GetPathType()));
+        _pathBlockedTime += _thinkInterval;
+        MotionMaster* motion = me->GetMotionMaster();
+        if (me->isMoving() || motion->GetCurrentMovementGeneratorType() == CHASE_MOTION_TYPE || motion->GetCurrentMovementGeneratorType() == FOLLOW_MOTION_TYPE)
+        {
+            _chaseMin = _chaseMax = -1.0f;
+            motion->Clear();
+            me->StopMoving();
+        }
+        if (_pathBlockedTime >= 3000 && data && !data->IsWorldBot())
+        {
+            _pathBlockedTime = 0;
+            data->SummonRequested = true;   // the manager (world thread) brings it next to its owner
+            if (debug)
+                TC_LOG_INFO("server.foreverbots", "[BotAI] Bot={} still no way after 3 s, regrouped", me->GetName());
+        }
+        return true;
+    }
+    _pathBlockedTime = 0;
 
     Movement::PointsArray const& points = path.GetPath();
     if (points.size() <= 2)
@@ -205,7 +237,8 @@ void ForeverBotAI::MoveInCombat(BotContext& ctx, Unit* target)
         // anchor's own position, where line of sight is certain.
         if (!me->IsWithinLOSInMap(anchor, LINEOFSIGHT_ALL_CHECKS, VMAP::ModelIgnoreFlags::M2))
         {
-            if (motion->GetCurrentMovementGeneratorType() != POINT_MOTION_TYPE)
+            // (around the wall when the navmesh knows the way; the straight walk only when it says the line is free)
+            if (!StepAlongPath(anchor->GetPosition()) && motion->GetCurrentMovementGeneratorType() != POINT_MOTION_TYPE)
             {
                 motion->Clear();
                 motion->MovePoint(2, anchor->GetPositionX(), anchor->GetPositionY(), anchor->GetPositionZ());
@@ -314,9 +347,12 @@ void ForeverBotAI::MoveOutOfCombat(BotContext& ctx)
         return;
     }
     // a wall or a floor between me and the leader: around it, corner by corner
-    if (dist > 6.0f && StepAlongPath(ctx.Leader->GetPosition()))
+    // (also closer than that when the leader is out of sight in a dungeon: the other side of a wall, the floor above)
+    if ((dist > 6.0f || (dungeon && !me->IsWithinLOSInMap(ctx.Leader, LINEOFSIGHT_ALL_CHECKS, VMAP::ModelIgnoreFlags::M2)))
+        && StepAlongPath(ctx.Leader->GetPosition()))
     {
-        _followStuckTime = 0;
+        if (!_pathBlockedTime)
+            _followStuckTime = 0;
         return;
     }
 

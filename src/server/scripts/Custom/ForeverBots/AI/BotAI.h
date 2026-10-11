@@ -286,6 +286,7 @@ private:
     uint32 _snapUntil = 0;                                  // stepping back onto the floor: no other movement until then
     uint32 _potionReadyAt = 0;                              // potions share a two minute cooldown
     Position _stepCorner;                                   // the corner StepAlongPath is walking to
+    uint32 _pathBlockedTime = 0;                            // no path and no line of sight to where it wants to go
 
     // stuck detection
     ObjectGuid _stuckTarget;
