@@ -132,8 +132,10 @@ uint32 ClassicOpcodes::TranslateServerOpcode(uint32 coreOpcode)
     if (uint32 shift = ExtraGroupShift())
     {
         uint32 group = OpcodeGroup(classicOpcode);
-        // Classic.MainGroupInsertIndex = the first 70245 main-group index that moved (0x93..0xAD, see above)
-        static uint32 const insertIndex = uint32(sConfigMgr->GetIntDefault("Classic.MainGroupInsertIndex", 0x93));
+        // Classic.MainGroupInsertIndex = the first 70245 main-group index that moved (0x93..0xAD, see above). It is above 0x97:
+        // with 0x93 SMSG_PARTY_UPDATE went out as 0x98 and client 70338 took it for another message (group never shown, safe assert
+        // "Missing ChrModel for raceID 0, gender -1, class 4" at the very moment of each party update), so the party update keeps 0x97
+        static uint32 const insertIndex = uint32(sConfigMgr->GetIntDefault("Classic.MainGroupInsertIndex", 0x98));
         if (group == FirstRetailServerGroup + 1 && (classicOpcode & 0xFFFF) >= insertIndex)
             ++classicOpcode;
         if (group >= FirstRetailServerGroup + 1 && group <= LastRetailServerGroup + 1)

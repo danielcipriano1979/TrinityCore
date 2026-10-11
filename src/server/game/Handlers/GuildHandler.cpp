@@ -1033,6 +1033,14 @@ namespace
         uint32 const extraCount = data.read<uint32>();
         data.read_skip(extraCount * 16);
         data.read_skip<int8>();
+        // client 70338 sends one more byte here (01 00 before the activity ids; 70291 sent a single byte): with the old layout
+        // every activity id was read shifted by a byte and no listing ever matched a dungeon. Told apart by the size left.
+        size_t tail = activityCount * sizeof(uint32) + nameLength + commentLength + voiceChatLength + (bits[7] ? 1 : 0);
+        for (uint8 i = 4; i < 7; ++i)
+            if (bits[i])
+                tail += sizeof(int32);
+        if (data.size() - data.rpos() == tail + 1)
+            data.read_skip<uint8>();
         listing.Activities.clear();
         for (uint32 i = 0; i < activityCount; ++i)
             listing.Activities.push_back(data.read<uint32>());

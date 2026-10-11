@@ -4492,7 +4492,7 @@ Classic.OpcodeGroupShift = -1
 #                     The official sniff narrows it to 147..173 (0x93..0xAD: party, ready check, pet battle messages).
 #        Default:     147
 
-Classic.MainGroupInsertIndex = 147
+Classic.MainGroupInsertIndex = 152
 
 #    Classic.ClientMainGroupInsertIndex
 #        Description: Client 70291+: 70291 index (decimal) of the message added to the main client group; the client messages
