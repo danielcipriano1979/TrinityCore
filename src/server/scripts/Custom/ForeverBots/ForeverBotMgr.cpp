@@ -870,6 +870,11 @@ void ForeverBotMgr::UpdateLootRolls(ForeverBot& bot, Player* botPlayer)
     std::vector<LootRoll*> const rolls = botPlayer->GetLootRolls();    // copy: a vote can end the roll
     for (LootRoll* roll : rolls)
     {
+        // only rolls still registered on the player are alive (LootRoll::PlayerVote and ~LootRoll unregister them)
+        std::vector<LootRoll*> const& alive = botPlayer->GetLootRolls();
+        if (std::find(alive.begin(), alive.end(), roll) == alive.end())
+            continue;
+
         LootRoll::RollVoteMap const& votes = roll->GetVotes();
         auto mine = votes.find(botPlayer->GetGUID());
         if (mine == votes.end() || mine->second.Vote != RollVote::NotEmitedYet)

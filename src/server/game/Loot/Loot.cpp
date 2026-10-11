@@ -558,6 +558,10 @@ bool LootRoll::PlayerVote(Player* player, RollVote vote)
         default:                                            // Roll removed case
             return false;
     }
+    // the destructor only unregisters the players that have not voted: without this a player that voted kept a pointer
+    // to the roll after it was freed (Player::GetLootRoll and the Forever bots walk that list; server crash of
+    // 2026-10-11 17:54 in ForeverBotMgr::UpdateLootRolls)
+    player->RemoveLootRoll(this);
     return true;
 }
 
