@@ -1926,6 +1926,37 @@ bool ForeverBotMgr::StartDungeonRun(Player* owner, uint32 category, std::vector<
     run.Size = size;
     TC_LOG_INFO("misc", "ForeverBots: Group Finder run of {} to {} (map {}, roles {}, {} members)", owner->GetName(), name, run.Entrance.GetMapId(), roles, size);
     chat.SendSysMessage(Trinity::StringFormat("ForeverBots: {} ({} players) - the group is on its way.", name, size));
+
+    // The Group Finder takes the group inside without the walk, the quests and the earlier wings that hand out the keys
+    // a dungeon needs (the Skeleton Key, the Shadowforge Key, the Seal of Ascension...): world.forever_groupfinder_key lists
+    // them per activity and every real player of the group that lacks one gets it.
+    if (QueryResult keys = WorldDatabase.Query(Trinity::StringFormat("SELECT ItemID FROM forever_groupfinder_key WHERE ActivityID = {}", fields[0].GetUInt32()).c_str()))
+    {
+        std::vector<Player*> players = { owner };
+        if (group)
+            for (GroupReference const& ref : group->GetMembers())
+                if (Player* member = ref.GetSource(); member && member != owner && !IsBot(member->GetGUID()))
+                    players.push_back(member);
+        do
+        {
+            uint32 const itemId = (*keys)[0].GetUInt32();
+            if (!sObjectMgr->GetItemTemplate(itemId))
+                continue;
+            for (Player* player : players)
+            {
+                if (player->HasItemCount(itemId, 1, true))
+                    continue;
+                ItemPosCountVec dest;
+                if (player->CanStoreNewItem(NULL_BAG, NULL_SLOT, dest, itemId, 1) != EQUIP_ERR_OK)
+                {
+                    ChatHandler(player->GetSession()).SendSysMessage("ForeverBots: no room in your bags for a key this dungeon needs.");
+                    continue;
+                }
+                if (Item* item = player->StoreNewItem(dest, itemId, true))
+                    player->SendNewItem(item, 1, true, false);
+            }
+        } while (keys->NextRow());
+    }
     return true;
 }
 
