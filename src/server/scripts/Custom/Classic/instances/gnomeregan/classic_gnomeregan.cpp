@@ -22,6 +22,7 @@
 #include "ScriptMgr.h"
 #include "GameObject.h"
 #include "GossipDef.h"
+#include "Log.h"
 #include "Map.h"
 #include "MotionMaster.h"
 #include "ObjectAccessor.h"
@@ -430,6 +431,27 @@ struct classic_npc_blastmaster_emi_shortfuse : public EscortAI
 
     void UpdateEscortAI(uint32 diff) override
     {
+        // Watchdog. The phases wait for the waypoints and the waypoints wait for the end of the fight: when she is left in
+        // combat with nothing to attack (a trogg that never reached her) or the return after a fight never reports back, the
+        // event stopped for good with the cave-in open (2026-10-11: she said "the final charge is ready", took one step
+        // towards the last point and stood there; no explosion, no Grubbis). The longest planned stop is 30 s at a
+        // waypoint, so 40 s without moving, without a victim and without a phase running is a stall: leave combat and
+        // go on.
+        if (HasEscortState(STATE_ESCORT_ESCORTING) && !HasEscortState(STATE_ESCORT_PAUSED) && !_phaseTimer && !me->GetVictim() && !me->isMoving()
+            && _phase > 3 && _phase <= 31)
+        {
+            _stallTimer += diff;
+            if (_stallTimer >= 40000)
+            {
+                _stallTimer = 0;
+                TC_LOG_ERROR("scripts", "classic_npc_blastmaster_emi_shortfuse: stalled in phase {} (engaged {}, returning {}), leaving combat to go on",
+                    uint32(_phase), me->IsEngaged(), HasEscortState(STATE_ESCORT_RETURNING));
+                EscortAI::EnterEvadeMode(EvadeReason::Other);
+            }
+        }
+        else
+            _stallTimer = 0;
+
         // the phases are handled OOC (keeps them in sync with the waypoints)
         if (_phaseTimer && !me->GetVictim())
         {
@@ -696,6 +718,7 @@ private:
 
     uint8 _phase;
     uint32 _phaseTimer;
+    uint32 _stallTimer = 0;
     ObjectGuid _playerGuid;
     bool _didAggroText, _southernCaveInOpened, _northernCaveInOpened;
     std::list<ObjectGuid> _summonedMobGUIDs;
