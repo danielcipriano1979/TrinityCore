@@ -452,27 +452,24 @@ void FillOwnedCurrenciesMap(WorldPackets::Traits::TraitConfig const& traitConfig
                             if (currencySource->PlayerLevel && player.GetLevel() < currencySource->PlayerLevel)
                                 continue;
 
-                            if (currencySource->TraitNodeEntryID && !hasTraitNodeEntry(currencySource->TraitNodeEntryID))
+                            // (the entry can be in another config: the talent points of levels 5-9 are sources of the class
+                            // talent currency that require the entries of the Legacy perk Talented, which live in the perk config)
+                            if (currencySource->TraitNodeEntryID && !hasTraitNodeEntry(currencySource->TraitNodeEntryID)
+                                && !player.HasTraitNodeEntry(currencySource->TraitNodeEntryID))
                                 continue;
 
                             currencies[currencySource->TraitCurrencyID] += currencySource->Amount;
                         }
 
-                        // Classic 1.60 Legacy perk Talented: talent points every level from its start level instead of from level 10
-                        // (class talent currency 3820: one point per level 10-60, SourcedMax 51 stays the limit)
-                        static constexpr int32 ClassicTalentCurrencyID = 3820;
-                        static constexpr int32 ClassicFirstTalentLevel = 10;
-                        if (currency->ID == ClassicTalentCurrencyID)
-                        {
-                            if (int32 startLevel = player.GetClassicTalentedStartLevel(); startLevel > 0 && startLevel < ClassicFirstTalentLevel)
-                            {
-                                int32 extra = std::max(0, std::min(player.GetLevel(), ClassicFirstTalentLevel - 1) - startLevel + 1);
-                                int32& amount = currencies[currency->ID];
-                                amount += extra;
-                                if (currency->SourcedMax > 0)
-                                    amount = std::min(amount, currency->SourcedMax);
-                            }
-                        }
+                        // Classic 1.60 Legacy perk Talented: the client counts one talent point per level 5-9 for each perk entry
+                        // owned (TraitCurrencySource rows of currency 3820 with TraitNodeEntryID 137371-137374 and 136852), on
+                        // top of the one per level 10-60. That is the loop above, now that it sees the perk config. The aura
+                        // amount used before only ever gave the first rank: a level 36 hunter with the 5 entries had 28 points
+                        // on the server and 32 on the client, and every commit past the 28th was refused (2026-10-11).
+                        // SourcedMax (51) stays the limit.
+                        if (currency->SourcedMax > 0)
+                            if (auto itr = currencies.find(currency->ID); itr != currencies.end())
+                                itr->second = std::min(itr->second, currency->SourcedMax);
                     }
                     break;
                 case TraitCurrencyType::TraitSourcedPlayerDataElement:

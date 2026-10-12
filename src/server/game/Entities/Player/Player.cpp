@@ -32525,6 +32525,15 @@ int32 TraitMgr::PlayerDataAccessor::GetClassicTalentedStartLevel() const
     return _player->GetClassicLegacyPerkAmount(1225474, EFFECT_0);
 }
 
+bool TraitMgr::PlayerDataAccessor::HasTraitNodeEntry(int32 traitNodeEntryId) const
+{
+    for (auto const& [id, traitConfig] : _player->m_activePlayerData->TraitConfigs)
+        for (UF::TraitEntry const& traitEntry : traitConfig.value.Entries)
+            if (traitEntry.TraitNodeEntryID == traitNodeEntryId && (traitEntry.Rank > 0 || traitEntry.GrantedRanks > 0))
+                return true;
+    return false;
+}
+
 bool TraitMgr::PlayerDataAccessor::IsQuestRewarded(int32 questId) const
 {
     return _player->IsQuestRewarded(questId);
