@@ -112,8 +112,10 @@ struct classic_boss_thermaplugg : public ScriptedAI
         if (_instance)
             _instance->SetData(TYPE_THERMAPLUGG, FAIL);
 
-        // Remove remaining bombs
-        for (ObjectGuid const& guid : _summonedBombGUIDs)
+        // Remove remaining bombs (a copy: DespawnOrUnsummon calls SummonedCreatureDespawn, which removes the guid from the
+        // list being walked; that crashed the server on a wipe, 2026-10-11 21:43)
+        std::list<ObjectGuid> const bombs = _summonedBombGUIDs;
+        for (ObjectGuid const& guid : bombs)
         {
             if (Creature* bomb = me->GetMap()->GetCreature(guid))
                 bomb->DespawnOrUnsummon();
