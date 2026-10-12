@@ -3836,8 +3836,67 @@ void Player::DestroyForPlayer(Player const* target) const
     }
 }
 
+// Classic 1.60: slots past the update field array (the keyring) are kept here; ActivePlayerData::WriteUpdate sends the
+// changed ones. Touching the holder marks the active player data as changed so that the values update is built.
+void Player::SetInvSlot(uint32 slot, ObjectGuid guid)
+{
+    if (slot < CLASSIC_UF_INV_SLOTS)
+    {
+        SetUpdateFieldValue(m_values.ModifyValue(&Player::m_activePlayerData).ModifyValue(&UF::ActivePlayerData::InvSlots, slot), guid);
+        return;
+    }
+    if (slot >= PLAYER_SLOT_END || m_classicExtraInvSlots[slot - CLASSIC_UF_INV_SLOTS] == guid)
+        return;
+    m_classicExtraInvSlots[slot - CLASSIC_UF_INV_SLOTS] = guid;
+    m_classicExtraInvSlotsChanged[slot - CLASSIC_UF_INV_SLOTS] = true;
+    m_values.ModifyValue(&Player::m_activePlayerData);
+    AddToObjectUpdateIfNeeded();
+}
+
+bool Player::IsKeyringEnabled()
+{
+    static bool const enabled = sConfigMgr->GetIntDefault("Forever.Keyring", 1) != 0;
+    return enabled;
+}
+
+bool Player::IsKeyringItem(ItemTemplate const* proto)
+{
+    return proto && (proto->GetClass() == ITEM_CLASS_KEY || (proto->GetBagFamily() & BAG_FAMILY_MASK_KEYS));
+}
+
+void Player::MoveKeysToKeyring()
+{
+    if (!IsKeyringEnabled())
+        return;
+
+    std::vector<Item*> keys;
+    uint8 const inventoryEnd = INVENTORY_SLOT_ITEM_START + GetInventorySlotCount();
+    for (uint8 i = INVENTORY_SLOT_ITEM_START; i < inventoryEnd; ++i)
+        if (Item* item = GetItemByPos(INVENTORY_SLOT_BAG_0, i))
+            if (IsKeyringItem(item->GetTemplate()))
+                keys.push_back(item);
+    for (uint8 i = INVENTORY_SLOT_BAG_START; i < INVENTORY_SLOT_BAG_END; ++i)
+        if (Bag* bag = GetBagByPos(i))
+            for (uint32 j = 0; j < GetBagSize(bag); ++j)
+                if (Item* item = GetItemInBag(bag, j))
+                    if (IsKeyringItem(item->GetTemplate()))
+                        keys.push_back(item);
+
+    uint8 slot = KEYRING_SLOT_START;
+    for (Item* key : keys)
+    {
+        while (slot < KEYRING_SLOT_END && GetItemByPos(INVENTORY_SLOT_BAG_0, slot))
+            ++slot;
+        if (slot >= KEYRING_SLOT_END)
+            break;
+        SwapItem(key->GetPos(), uint16(INVENTORY_SLOT_BAG_0) << 8 | slot);
+        ++slot;
+    }
+}
+
 void Player::ClearValuesChangesMask()
 {
+    m_classicExtraInvSlotsChanged.reset();
     m_values.ClearChangesMask(&Player::m_playerData);
     m_values.ClearChangesMask(&Player::m_activePlayerData);
     Unit::ClearValuesChangesMask();
@@ -10225,6 +10284,8 @@ bool Player::IsInventoryPos(uint8 bag, uint8 slot)
         return true;
     if (bag == INVENTORY_SLOT_BAG_0 && (slot >= CHILD_EQUIPMENT_SLOT_START && slot < CHILD_EQUIPMENT_SLOT_END))
         return true;
+    if (IsKeyringPos(bag, slot))
+        return true;
     return false;
 }
 
@@ -10309,6 +10370,10 @@ bool Player::IsValidPos(uint8 bag, uint8 slot, bool explicit_pos) const
 
         // bank bag slots
         if (slot >= BANK_SLOT_BAG_START && slot < BANK_SLOT_BAG_END)
+            return true;
+
+        // keyring
+        if (IsKeyringPos(bag, slot) && IsKeyringEnabled())
             return true;
 
         return false;
@@ -10612,6 +10677,9 @@ InventoryResult Player::CanStoreItem_InSpecificSlot(uint8 bag, uint8 slot, ItemP
             // prevent cheating
             if ((slot >= BUYBACK_SLOT_START && slot < BUYBACK_SLOT_END) || slot >= PLAYER_SLOT_END)
                 return EQUIP_ERR_WRONG_BAG_TYPE;
+            // Classic 1.60: of the slots past the retail layout only the keyring is used, and only for keys
+            if (slot >= ACCOUNT_BANK_SLOT_BAG_END && (!IsKeyringPos(bag, slot) || !IsKeyringEnabled() || !IsKeyringItem(pProto)))
+                return EQUIP_ERR_WRONG_BAG_TYPE;
             if (slot < INVENTORY_SLOT_ITEM_END && slot >= INVENTORY_SLOT_ITEM_START + GetInventorySlotCount())
                 return EQUIP_ERR_NO_SLOT_AVAILABLE;
         }
@@ -10875,6 +10943,7 @@ InventoryResult Player::CanStoreItem(uint8 bag, uint8 slot, ItemPosCountVec &des
 
     // not specific slot or have space for partly store only in specific slot
     uint8 inventorySlotEnd = INVENTORY_SLOT_ITEM_START + GetInventorySlotCount();
+    bool const keyring = IsKeyringEnabled() && IsKeyringItem(pProto);       // Classic 1.60 keyring
 
     // in specific bag
     if (bag != NULL_BAG)
@@ -10887,6 +10956,13 @@ InventoryResult Player::CanStoreItem(uint8 bag, uint8 slot, ItemPosCountVec &des
                 res = CanStoreItem_InInventorySlots(CHILD_EQUIPMENT_SLOT_START, CHILD_EQUIPMENT_SLOT_END, dest, pProto, count, true, pItem, bag, slot);
                 if (Optional<InventoryResult> res2 = tryHandleInvStoreResult(res))
                     return *res2;
+
+                if (keyring)
+                {
+                    res = CanStoreItem_InInventorySlots(KEYRING_SLOT_START, KEYRING_SLOT_END, dest, pProto, count, true, pItem, bag, slot);
+                    if (Optional<InventoryResult> res2 = tryHandleInvStoreResult(res))
+                        return *res2;
+                }
 
                 res = CanStoreItem_InInventorySlots(INVENTORY_SLOT_ITEM_START, inventorySlotEnd, dest, pProto, count, true, pItem, bag, slot);
                 if (Optional<InventoryResult> res2 = tryHandleInvStoreResult(res))
@@ -10914,6 +10990,13 @@ InventoryResult Player::CanStoreItem(uint8 bag, uint8 slot, ItemPosCountVec &des
                     return *res2;
             }
 
+            if (keyring)
+            {
+                res = CanStoreItem_InInventorySlots(KEYRING_SLOT_START, KEYRING_SLOT_END, dest, pProto, count, false, pItem, bag, slot);
+                if (Optional<InventoryResult> res2 = tryHandleInvStoreResult(res))
+                    return *res2;
+            }
+
             res = CanStoreItem_InInventorySlots(INVENTORY_SLOT_ITEM_START, inventorySlotEnd, dest, pProto, count, false, pItem, bag, slot);
             if (Optional<InventoryResult> res2 = tryHandleInvStoreResult(res))
                 return *res2;
@@ -10937,6 +11020,13 @@ InventoryResult Player::CanStoreItem(uint8 bag, uint8 slot, ItemPosCountVec &des
         res = CanStoreItem_InInventorySlots(CHILD_EQUIPMENT_SLOT_START, CHILD_EQUIPMENT_SLOT_END, dest, pProto, count, true, pItem, bag, slot);
         if (Optional<InventoryResult> res2 = tryHandleInvStoreResult(res))
             return *res2;
+
+        if (keyring)
+        {
+            res = CanStoreItem_InInventorySlots(KEYRING_SLOT_START, KEYRING_SLOT_END, dest, pProto, count, true, pItem, bag, slot);
+            if (Optional<InventoryResult> res2 = tryHandleInvStoreResult(res))
+                return *res2;
+        }
 
         res = CanStoreItem_InInventorySlots(INVENTORY_SLOT_ITEM_START, inventorySlotEnd, dest, pProto, count, true, pItem, bag, slot);
         if (Optional<InventoryResult> res2 = tryHandleInvStoreResult(res))
@@ -10997,6 +11087,14 @@ InventoryResult Player::CanStoreItem(uint8 bag, uint8 slot, ItemPosCountVec &des
     if (pItem && pItem->HasItemFlag(ITEM_FIELD_FLAG_CHILD))
     {
         res = CanStoreItem_InInventorySlots(CHILD_EQUIPMENT_SLOT_START, CHILD_EQUIPMENT_SLOT_END, dest, pProto, count, false, pItem, bag, slot);
+        if (Optional<InventoryResult> res2 = tryHandleInvStoreResult(res))
+            return *res2;
+    }
+
+    // a key goes to the keyring while it has room
+    if (keyring)
+    {
+        res = CanStoreItem_InInventorySlots(KEYRING_SLOT_START, KEYRING_SLOT_END, dest, pProto, count, false, pItem, bag, slot);
         if (Optional<InventoryResult> res2 = tryHandleInvStoreResult(res))
             return *res2;
     }
@@ -12744,6 +12842,18 @@ uint32 Player::DestroyItemCount(uint32 itemEntry, uint32 count, bool update, boo
     TC_LOG_DEBUG("entities.player.items", "Player::DestroyItemCount: Player '{}' ({}), Item: {}, Count: {}",
         GetName(), GetGUID().ToString(), itemEntry, count);
     uint32 remcount = 0;
+
+    // in the keyring (Classic 1.60); keys do not stack, so whole items only
+    for (uint8 i = KEYRING_SLOT_START; i < KEYRING_SLOT_END; ++i)
+    {
+        Item* item = GetItemByPos(INVENTORY_SLOT_BAG_0, i);
+        if (!item || item->GetEntry() != itemEntry || item->IsInTrade() || item->GetCount() + remcount > count)
+            continue;
+        remcount += item->GetCount();
+        DestroyItem(INVENTORY_SLOT_BAG_0, i, update);
+        if (remcount >= count)
+            return remcount;
+    }
 
     // in inventory
     uint8 inventoryEnd = INVENTORY_SLOT_ITEM_START + GetInventorySlotCount();

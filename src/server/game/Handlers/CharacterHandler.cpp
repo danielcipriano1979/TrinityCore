@@ -1747,6 +1747,8 @@ void WorldSession::HandlePlayerLogin(LoginQueryHolder const& holder)
 
     sScriptMgr->OnPlayerLogin(pCurrChar, firstLogin);
 
+    pCurrChar->MoveKeysToKeyring();     // Classic 1.60 keyring
+
     // Battle.net presence: the client takes the account's BattleTag from it (Social window, Battle.net friends); online friends are told
     BattlenetPresence::OnLogin(this);
 

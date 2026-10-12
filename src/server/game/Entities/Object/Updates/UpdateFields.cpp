@@ -1349,15 +1349,19 @@ static constexpr std::array<std::pair<uint32, uint32>, 10> ClassicUnitDataGroups
 } };
 
 // Renumbers a retail changes mask to Classic bits, recomputes the Classic group bits and writes the blocks header
+// extraClassicBits: Classic bits with no retail counterpart that changed (the inventory slots past our array)
 template<std::size_t ClassicBlockCount, typename TcMask, std::size_t GroupCount>
 static std::array<uint32, ClassicBlockCount> WriteClassicChangesMaskHeader(ByteBuffer& data, TcMask const& changesMask, uint32(*remap)(uint32),
-    std::array<std::pair<uint32, uint32>, GroupCount> const& groups)
+    std::array<std::pair<uint32, uint32>, GroupCount> const& groups, std::vector<uint32> const* extraClassicBits = nullptr)
 {
     std::array<uint32, ClassicBlockCount> classicBlocks = { };
     for (uint32 bit = 0; bit < TcMask::BlockCount * 32; ++bit)
         if (changesMask[bit])
             if (uint32 cb = remap(bit); cb < ClassicBlockCount * 32)
                 classicBlocks[cb / 32] |= 1u << (cb % 32);
+    if (extraClassicBits)
+        for (uint32 cb : *extraClassicBits)
+            classicBlocks[cb / 32] |= 1u << (cb % 32);
     for (auto [group, last] : groups)
     {
         classicBlocks[group / 32] &= ~(1u << (group % 32));
@@ -5379,9 +5383,10 @@ void ActivePlayerData::WriteCreate(EnumFlag<UpdateFieldFlag> fieldVisibilityFlag
     {
         data << InvSlots[i];
     }
-    // Classic 1.60.1.70009 has 145 InvSlots (client ActivePlayerData create reader rva 0xA882E0, count at rva 0x4E417E0)
+    // Classic 1.60.1.70009 has 145 InvSlots (client ActivePlayerData create reader rva 0xA882E0, count at rva 0x4E417E0).
+    // The 37 past our array (the keyring is 112..143) are kept by the player.
     for (uint32 i = 108; i < 145; ++i)
-        data << ObjectGuid::Empty;
+        data << (owner ? owner->GetClassicExtraInvSlot(i) : ObjectGuid::Empty);
     data << *FarsightObject;
     data << *SummonedBattlePetGUID;
     data << uint32(KnownTitles.size());
@@ -5831,7 +5836,17 @@ static constexpr std::array<std::pair<uint32, uint32>, 16> ClassicActivePlayerDa
 void ActivePlayerData::WriteUpdate(Mask const& changesMask, ByteBuffer& data, Player const* receiver, Player const* owner, bool ignoreNestedChangesMask) const
 {
 
-    std::array<uint32, 14> classicBlocks = WriteClassicChangesMaskHeader<14>(data, changesMask, &ClassicActivePlayerDataBit, ClassicActivePlayerDataGroups);
+    // Classic 1.60: changed inventory slots past our 108 (the keyring): Classic bit 169 + slot, in the InvSlots group (168)
+    std::vector<uint32> extraInvSlots;
+    if (owner)
+        for (uint32 slot = CLASSIC_UF_INV_SLOTS; slot < PLAYER_SLOT_END; ++slot)
+            if (owner->IsClassicExtraInvSlotChanged(slot))
+                extraInvSlots.push_back(slot);
+    std::vector<uint32> extraClassicBits;
+    for (uint32 slot : extraInvSlots)
+        extraClassicBits.push_back(169 + slot);
+
+    std::array<uint32, 14> classicBlocks = WriteClassicChangesMaskHeader<14>(data, changesMask, &ClassicActivePlayerDataBit, ClassicActivePlayerDataGroups, &extraClassicBits);
     bool classicGroup134 = (classicBlocks[4] & (1u << (134 % 32))) != 0;
 
     if (changesMask[0])
@@ -7145,6 +7160,8 @@ void ActivePlayerData::WriteUpdate(Mask const& changesMask, ByteBuffer& data, Pl
             }
         }
     }
+    for (uint32 slot : extraInvSlots)       // Classic 1.60: slots 108..144, in slot order right after ours
+        data << owner->GetClassicExtraInvSlot(slot);
     if (changesMask[272])
     {
         for (uint32 i = 0; i < 2; ++i)

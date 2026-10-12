@@ -2270,6 +2270,32 @@ std::vector<std::string> ForeverBotMgr::DescribeStats()
     return lines;
 }
 
+// Test aid (.bottest additem <item>): stores one of the item on every party bot and says in which bag / slot it ended up
+// (how the Classic keyring, slots 112..143, was checked without a client).
+std::vector<std::string> ForeverBotMgr::TestAddItem(uint32 itemId)
+{
+    std::vector<std::string> lines;
+    for (auto const& [guid, bot] : _bots)
+    {
+        Player* p = bot.Session ? bot.Session->GetPlayer() : nullptr;
+        if (!p || !p->IsInWorld() || bot.IsWorldBot())
+            continue;
+        ItemPosCountVec dest;
+        InventoryResult const result = p->CanStoreNewItem(NULL_BAG, NULL_SLOT, dest, itemId, 1);
+        if (result != EQUIP_ERR_OK)
+        {
+            lines.push_back(Trinity::StringFormat("{}: cannot store item {} (error {})", p->GetName(), itemId, uint32(result)));
+            continue;
+        }
+        Item* item = p->StoreNewItem(dest, itemId, true);
+        lines.push_back(Trinity::StringFormat("{}: item {} stored in bag {} slot {}, has {} of it", p->GetName(), itemId,
+            item ? uint32(item->GetBagSlot()) : 0u, item ? uint32(item->GetSlot()) : 0u, p->GetItemCount(itemId)));
+    }
+    if (lines.empty())
+        lines.push_back("no party bot in world");
+    return lines;
+}
+
 std::vector<std::string> ForeverBotMgr::DescribeTelemetry()
 {
     std::vector<std::string> lines;

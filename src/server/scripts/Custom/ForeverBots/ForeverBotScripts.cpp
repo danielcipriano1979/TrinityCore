@@ -154,6 +154,12 @@ public:
                 handler->SendSysMessage(line);
             return true;
         }
+        if (action == "additem" && words.size() >= 2)
+        {
+            for (std::string const& line : sForeverBotMgr->TestAddItem(Trinity::StringTo<uint32>(words[1]).value_or(0)))
+                handler->SendSysMessage(line);
+            return true;
+        }
         if (action == "stats")
         {
             for (std::string const& line : sForeverBotMgr->DescribeStats())

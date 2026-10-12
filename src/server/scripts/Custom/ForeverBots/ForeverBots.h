@@ -142,6 +142,7 @@ public:
     std::string StartTestParty(uint32 mapId, Position const& pos, uint8 level, uint8 team,
         std::vector<std::pair<uint8, BotRole>> const& members);
     void StopTestParties();
+    std::vector<std::string> TestAddItem(uint32 itemId);    // .bottest additem: gives the item to every party bot, reports where it went
     static uint32 TanksFor(uint32 size);
     // the roles a player ticked for their last Group Finder run (lfg::LfgRoles mask, 0 = none)
     uint8 GetOwnerRoles(ObjectGuid owner) const { auto itr = _ownerRoles.find(owner); return itr != _ownerRoles.end() ? itr->second : 0; }

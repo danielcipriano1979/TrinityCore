@@ -33,6 +33,7 @@
 #include "PlayerTaxi.h"
 #include "QuestDef.h"
 #include "SceneMgr.h"
+#include <bitset>
 #include <variant>
 
 struct AccessRequirement;
@@ -712,11 +713,16 @@ enum PlayerSlots
     // first slot for item stored (in any way in player m_items data)
     PLAYER_SLOT_START           = 0,
     // last+1 slot for item stored (in any way in player m_items data)
-    PLAYER_SLOT_END             = 108,                  // Classic 1.60: 9 bank bag slots, everything after them +3
+    PLAYER_SLOT_END             = 145,                  // Classic 1.60: the client's 145 InvSlots (9 bank bag slots, the keyring)
     PLAYER_SLOTS_COUNT          = (PLAYER_SLOT_END - PLAYER_SLOT_START)
 };
 
-static_assert(UF::size<decltype(UF::ActivePlayerData::InvSlots)>() == PLAYER_SLOT_END);
+// Classic 1.60: the update field array holds the first 108 slots (the retail layout + 3 bank bags). The other 37 of the client
+// (the keyring among them) are kept by Player and written into the create / values update by hand, see SetInvSlot and
+// ActivePlayerData::WriteCreate / WriteUpdate.
+inline constexpr uint32 CLASSIC_UF_INV_SLOTS = 108;
+inline constexpr uint32 CLASSIC_EXTRA_INV_SLOTS = PLAYER_SLOT_END - CLASSIC_UF_INV_SLOTS;
+static_assert(UF::size<decltype(UF::ActivePlayerData::InvSlots)>() == CLASSIC_UF_INV_SLOTS);
 
 inline constexpr uint8 INVENTORY_SLOT_BAG_0 = 255;
 inline constexpr uint8 INVENTORY_DEFAULT_SIZE = 16;
@@ -830,6 +836,12 @@ enum AccountBankBagSlots
 {
     ACCOUNT_BANK_SLOT_BAG_START = 103,
     ACCOUNT_BANK_SLOT_BAG_END   = 108
+};
+
+enum KeyRingSlots                                           // 32 slots (Classic 1.60 client: inventory slots 112..143)
+{
+    KEYRING_SLOT_START          = 112,
+    KEYRING_SLOT_END            = 144
 };
 
 struct ItemPosCount
@@ -1435,6 +1447,11 @@ class TC_GAME_API Player final : public Unit, public GridObject<Player>
                         if (callback(pItem) == ItemSearchCallbackResult::Stop)
                             return false;
 
+                for (uint8 i = KEYRING_SLOT_START; i < KEYRING_SLOT_END; ++i)
+                    if (Item* pItem = GetItemByPos(INVENTORY_SLOT_BAG_0, i))
+                        if (callback(pItem) == ItemSearchCallbackResult::Stop)
+                            return false;
+
                 for (uint8 i = INVENTORY_SLOT_BAG_START; i < INVENTORY_SLOT_BAG_END; ++i)
                     if (Bag* pBag = GetBagByPos(i))
                         for (uint32 j = 0; j < GetBagSize(pBag); ++j)
@@ -1505,6 +1522,11 @@ class TC_GAME_API Player final : public Unit, public GridObject<Player>
         static bool IsBankPos(uint8 bag, uint8 slot);
         static bool IsChildEquipmentPos(uint16 pos) { return IsChildEquipmentPos(pos >> 8, pos & 255); }
         static bool IsChildEquipmentPos(uint8 bag, uint8 slot);
+        // Classic 1.60 keyring (Forever.Keyring in worldserver.conf, default 1): keys are stored there first
+        static bool IsKeyringPos(uint8 bag, uint8 slot) { return bag == INVENTORY_SLOT_BAG_0 && slot >= KEYRING_SLOT_START && slot < KEYRING_SLOT_END; }
+        static bool IsKeyringEnabled();
+        static bool IsKeyringItem(ItemTemplate const* proto);
+        void MoveKeysToKeyring();        // at login: keys picked up before the keyring existed leave the bags
         static bool IsAccountBankPos(uint16 pos) { return IsBankPos(pos >> 8, pos & 255); }
         static bool IsAccountBankPos(uint8 bag, uint8 slot);
         bool IsValidPos(uint16 pos, bool explicit_pos) const { return IsValidPos(pos >> 8, pos & 255, explicit_pos); }
@@ -1620,7 +1642,10 @@ class TC_GAME_API Player final : public Unit, public GridObject<Player>
         bool HasCurrency(uint32 id, uint32 amount) const;
         void SetCurrencyFlagsFromClient(uint32 id, CurrencyDbFlags flags);
 
-        void SetInvSlot(uint32 slot, ObjectGuid guid) { SetUpdateFieldValue(m_values.ModifyValue(&Player::m_activePlayerData).ModifyValue(&UF::ActivePlayerData::InvSlots, slot), guid); }
+        void SetInvSlot(uint32 slot, ObjectGuid guid);
+        // Classic 1.60: inventory slots 108..144, outside the update field array
+        ObjectGuid const& GetClassicExtraInvSlot(uint32 slot) const { return m_classicExtraInvSlots[slot - CLASSIC_UF_INV_SLOTS]; }
+        bool IsClassicExtraInvSlotChanged(uint32 slot) const { return m_classicExtraInvSlotsChanged[slot - CLASSIC_UF_INV_SLOTS]; }
 
         void ApplyEquipCooldown(Item* pItem);
         void QuickEquipItem(uint16 pos, Item* pItem);
@@ -3280,6 +3305,8 @@ class TC_GAME_API Player final : public Unit, public GridObject<Player>
         uint32 m_atLoginFlags;
 
         Item* m_items[PLAYER_SLOTS_COUNT];
+        std::array<ObjectGuid, CLASSIC_EXTRA_INV_SLOTS> m_classicExtraInvSlots = { };
+        std::bitset<CLASSIC_EXTRA_INV_SLOTS> m_classicExtraInvSlotsChanged;
         uint32 m_currentBuybackSlot;
 
         PlayerCurrenciesMap _currencyStorage;
