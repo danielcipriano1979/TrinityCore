@@ -118,12 +118,17 @@ namespace Movement
         // zero length segment. The points between the first and the last travel as packed offsets (0.25 yd steps), so two
         // navmesh points closer than that arrive as the same point. A pet following its owner relaunches its path every
         // update: with movement maps for the dungeon (Wailing Caverns, 2026-10-07) those became short multi-point paths
-        // and a client died next to a hunter bot's pet. Follow and chase paths drop the points closer than 0.5 yd to their
-        // neighbours (waypoint paths keep theirs: their points are reported by index).
+        // and a client died next to a hunter bot's pet. Paths drop the points closer than 0.5 yd to their neighbours.
+        // 2026-10-13: every pathfinding generator, not only follow and chase - with movement maps for the open world a
+        // patrolling Bristleback Hunter's path had its second point 0.4 yd from the first and the client of a player
+        // flying over it stopped with "BadSpline: node 1 of 4". Left alone: waypoint paths (their points are reported by
+        // index; WaypointMovementGenerator filters its own and fixes the indices), taxi flights, spline chains and
+        // effect movement (jumps, knockbacks).
         if (args.path.size() > 2 && !args.flags.Cyclic && !args.flags.Catmullrom)
         {
             MovementGeneratorType const generator = unit->GetMotionMaster()->GetCurrentMovementGeneratorType();
-            if (generator == FOLLOW_MOTION_TYPE || generator == CHASE_MOTION_TYPE)
+            if (generator != WAYPOINT_MOTION_TYPE && generator != FLIGHT_MOTION_TYPE && generator != SPLINE_CHAIN_MOTION_TYPE
+                && generator != EFFECT_MOTION_TYPE)
             {
                 PointsArray filtered;
                 filtered.reserve(args.path.size());

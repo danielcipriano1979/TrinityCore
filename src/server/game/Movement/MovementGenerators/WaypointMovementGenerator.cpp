@@ -28,6 +28,7 @@
 #include "Player.h"
 #include "Transport.h"
 #include "WaypointManager.h"
+#include <algorithm>
 #include <span>
 
 namespace
@@ -463,6 +464,57 @@ void CreateMergedPath(Unit const* owner, WaypointPath const* path, uint32 previo
 }
 }
 
+namespace
+{
+// Forever: the 1.60 client stops with "BadSpline" / FLT_DIVIDE_BY_ZERO on a path with a (nearly) zero length segment
+// (see MoveSplineInit::Launch). With movement maps the path to a waypoint is the navmesh's, and its first corner can
+// sit on top of the creature: drop the points closer than 0.5 yd to the one before and move the waypoint indices
+// along. A waypoint itself is never dropped unless it is where the creature already stands.
+void RemoveTinySegments(Movement::PointsArray& points, std::vector<int32>& waypointTransitionSplinePoints)
+{
+    if (points.size() <= 2)
+        return;
+
+    auto isWaypoint = [&](std::size_t index)
+    {
+        return std::ranges::find(waypointTransitionSplinePoints, int32(index)) != waypointTransitionSplinePoints.end();
+    };
+
+    Movement::PointsArray kept;
+    std::vector<int32> newIndex(points.size(), 0);
+    kept.reserve(points.size());
+    kept.push_back(points[0]);
+    for (std::size_t i = 1; i < points.size(); ++i)
+    {
+        if ((points[i] - kept.back()).length() < 0.5f)
+        {
+            // the waypoint stays, its close neighbour goes (unless that neighbour is the start)
+            if (isWaypoint(i) && kept.size() > 1)
+                kept.back() = points[i];
+        }
+        else
+            kept.push_back(points[i]);
+        newIndex[i] = int32(kept.size() - 1);
+    }
+
+    if (kept.size() < 2)            // everything on one spot: keep a start and an end like before
+    {
+        kept.push_back(points.back());
+        for (int32& index : newIndex)
+            index = std::min<int32>(index, 1);
+        newIndex.back() = 1;
+    }
+
+    if (kept.size() == points.size())
+        return;
+
+    for (int32& transition : waypointTransitionSplinePoints)
+        if (transition >= 0 && std::size_t(transition) < newIndex.size())
+            transition = newIndex[transition];
+    points = std::move(kept);
+}
+}
+
 template <typename T>
 void WaypointMovementGenerator<T>::StartMove(T* owner, bool relaunch/* = false*/)
 {
@@ -561,6 +613,9 @@ void WaypointMovementGenerator<T>::StartMove(T* owner, bool relaunch/* = false*/
             &points, &_waypointTransitionSplinePoints, &lastWaypointForSegment);
     else
         CreateSingularPointPath(owner, path, _currentNode, _generatePath, &points, &_waypointTransitionSplinePoints);
+
+    if (!isCyclic)
+        RemoveTinySegments(points, _waypointTransitionSplinePoints);
 
     _waypointTransitionSplinePointsIndex = 0;
 
